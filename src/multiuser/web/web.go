@@ -17,6 +17,7 @@ import (
 	"github.com/aldinokemal/go-whatsapp-web-multidevice/multiuser/auth"
 	"github.com/aldinokemal/go-whatsapp-web-multidevice/multiuser/owners"
 	"github.com/aldinokemal/go-whatsapp-web-multidevice/multiuser/passkey"
+	"github.com/aldinokemal/go-whatsapp-web-multidevice/multiuser/signin"
 	"github.com/aldinokemal/go-whatsapp-web-multidevice/multiuser/store"
 	"github.com/aldinokemal/go-whatsapp-web-multidevice/ui/mcp/oauth"
 	"github.com/gofiber/fiber/v3"
@@ -157,6 +158,12 @@ type Deps struct {
 	// RetentionHours is how long messages and media are kept
 	// (WTF_RETENTION_HOURS); 0 means retention is off and nothing is said.
 	RetentionHours int
+	// PasskeyLoginLimiter caps anonymous POST /auth/passkey/login/begin
+	// attempts per source IP. The ceremony store BeginLogin reserves into is
+	// shared and bounded (passkey.defaultMax), so without this a flood from
+	// one address could fill it and start refusing everybody's passkey
+	// sign-in. Nil means a conservative default (mountSignin).
+	PasskeyLoginLimiter *signin.Limiter
 }
 
 // GrantStore is the part of the MCP OAuth server the Account page uses.

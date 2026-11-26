@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/aldinokemal/go-whatsapp-web-multidevice/multiuser/media"
 	"github.com/aldinokemal/go-whatsapp-web-multidevice/multiuser/store"
@@ -135,7 +136,7 @@ func (d *Deleter) Delete(ctx context.Context, userID string) error {
 		// without resetting chat storage back to the slot id. The owner
 		// record (device_owners.last_phone) still has it, so this is the
 		// one place left to recover it.
-		lastPhone, lastJID := lastKnownIdentity(ctx, d.Store, id)
+		lastPhone, lastJID, pairedAt := lastKnownIdentity(ctx, d.Store, id)
 		if err := d.Devices.RemoveDevice(ctx, id); err != nil && !errors.Is(err, pkgError.ErrDeviceNotFound) {
 			return fmt.Errorf("remove device %s: %w", id, err)
 		}
@@ -147,19 +148,20 @@ func (d *Deleter) Delete(ctx context.Context, userID string) error {
 				// A phone number is not permanently bound to one account: it
 				// can be released here and re-paired under a completely
 				// different one afterward. If another owner's slot now
-				// remembers this same number, that chat partition is theirs
-				// now, not this account's leftover data - deleting it would
-				// destroy a different, live account's current chat history
-				// (found in review, the same category of bug this whole fix
-				// closes, in the other direction).
-				claimed, err := d.Store.PhoneClaimedByOtherOwner(ctx, u.ID, lastPhone)
+				// actively holds this same number, that chat partition is
+				// theirs now, not this account's leftover data - deleting it
+				// would destroy a different, live account's current chat
+				// history (found in review, the same category of bug this
+				// whole fix closes, in the other direction).
+				claimed, err := d.Store.PhoneClaimedByOtherOwner(ctx, u.ID, lastPhone, pairedAt)
 				if err != nil {
 					return fmt.Errorf("checking phone claim for %s: %w", id, err)
 				}
 				if claimed {
-					logrus.Warnf("[WTF] account %s: skipping shared chat partition %s for device %s (re-paired under another account)", u.ID, lastJID, id)
+					// Never log the phone/JID itself, only ids: it is PII.
+					logrus.Warnf("[WTF] account %s: skipping shared chat partition for device %s (re-paired under another account)", u.ID, id)
 				} else if err := d.Chats.DeleteDeviceData(lastJID); err != nil {
-					return fmt.Errorf("chat data for %s (jid %s): %w", id, lastJID, err)
+					return fmt.Errorf("chat data for %s: %w", id, err)
 				}
 			}
 		}
@@ -211,18 +213,19 @@ func (d *Deleter) removeMedia(deviceID string) error {
 	return media.RemoveDevice(d.MediaRoot, deviceID)
 }
 
-// lastKnownIdentity recovers the bare phone number and the phone JID chat
-// storage used for deviceID, from the owner record rather than the live
-// DeviceInstance: recordSlotEvent (multiuser/runtime.go) writes
-// device_owners.last_phone on every events.Connected and keeps it through a
-// later events.LoggedOut (MarkSignedOut), so it still has the number even
-// after a remote logout has cleared the live instance's own JID
-// (DeviceInstance.ResetClient). Both empty means no number was ever
-// recorded for this slot (never paired, or the slot row is already gone).
-func lastKnownIdentity(ctx context.Context, st *store.Store, deviceID string) (phone, jid string) {
+// lastKnownIdentity recovers the bare phone number, the phone JID chat
+// storage used, and when the slot itself was reserved (its created_at), all
+// for deviceID, from the owner record rather than the live DeviceInstance:
+// recordSlotEvent (multiuser/runtime.go) writes device_owners.last_phone on
+// every events.Connected and keeps it through a later events.LoggedOut
+// (MarkSignedOut), so it still has the number even after a remote logout
+// has cleared the live instance's own JID (DeviceInstance.ResetClient).
+// Empty phone/jid means no number was ever recorded for this slot (never
+// paired, or the slot row is already gone); pairedAt is then the zero time.
+func lastKnownIdentity(ctx context.Context, st *store.Store, deviceID string) (phone, jid string, pairedAt time.Time) {
 	sl, err := st.SlotOf(ctx, deviceID)
 	if err != nil || sl.LastPhone == "" {
-		return "", ""
+		return "", "", time.Time{}
 	}
-	return sl.LastPhone, types.NewJID(sl.LastPhone, types.DefaultUserServer).String()
+	return sl.LastPhone, types.NewJID(sl.LastPhone, types.DefaultUserServer).String(), sl.CreatedAt
 }

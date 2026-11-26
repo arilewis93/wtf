@@ -40,32 +40,54 @@ func TestOwnership(t *testing.T) {
 // TestPhoneClaimedByOtherOwner is account deletion's safety check: a phone
 // number can be released by one account and re-paired under a completely
 // different one, so "who last recorded this number" must be checked per
-// OWNER, not assumed to still be the account being deleted.
+// OWNER, not assumed to still be the account being deleted. It must also
+// not fail open: an old, abandoned row under another account (reserved
+// before the slot being deleted, or no longer connected) must never read as
+// a live claim, or the original account's own leftover chat history would
+// never actually get cleaned up.
 func TestPhoneClaimedByOtherOwner(t *testing.T) {
 	st := openTest(t)
 	ctx := context.Background()
+	base := time.Date(2026, 11, 23, 10, 0, 0, 0, time.UTC)
+	st.Now = func() time.Time { return base }
 	a, _ := st.CreateUser(ctx, "+27825550100")
-	b, _ := st.CreateUser(ctx, "+27825550101")
 	require.NoError(t, st.SetOwner(ctx, "d_a1", a.ID))
-	require.NoError(t, st.SetOwner(ctx, "d_b1", b.ID))
 	require.NoError(t, st.RecordIdentity(ctx, "d_a1", "27825550199", "A's number"))
-
-	claimed, err := st.PhoneClaimedByOtherOwner(ctx, a.ID, "27825550199")
+	aSlot, err := st.SlotOf(ctx, "d_a1")
 	require.NoError(t, err)
-	require.False(t, claimed, "only a's own slot holds it")
 
-	claimed, err = st.PhoneClaimedByOtherOwner(ctx, b.ID, "27825550199")
+	claimed, err := st.PhoneClaimedByOtherOwner(ctx, a.ID, "27825550199", aSlot.CreatedAt)
 	require.NoError(t, err)
-	require.True(t, claimed, "a's slot, not b's, holds it")
+	require.False(t, claimed, "nobody else holds it yet")
 
-	// Re-paired under b, the number now belongs to a slot excluded from a's
-	// own check too (the query is "any OTHER owner", not "any other slot").
-	require.NoError(t, st.RecordIdentity(ctx, "d_b1", "27825550199", "B's phone now"))
-	claimed, err = st.PhoneClaimedByOtherOwner(ctx, a.ID, "27825550199")
+	b, _ := st.CreateUser(ctx, "+27825550101")
+
+	// An old, abandoned row under b: reserved BEFORE a's own slot, and
+	// never explicitly signed out (a ghost, e.g. its own account later went
+	// quiet without a clean LoggedOut event ever reaching the store). Not a
+	// more recent claim, however it looks on its own.
+	st.Now = func() time.Time { return base.Add(-time.Hour) }
+	require.NoError(t, st.SetOwner(ctx, "d_ghost", b.ID))
+	require.NoError(t, st.RecordIdentity(ctx, "d_ghost", "27825550199", "an old ghost"))
+	claimed, err = st.PhoneClaimedByOtherOwner(ctx, a.ID, "27825550199", aSlot.CreatedAt)
 	require.NoError(t, err)
-	require.True(t, claimed, "b now also holds it")
+	require.False(t, claimed, "an older, ghost row must not block cleanup")
 
-	claimed, err = st.PhoneClaimedByOtherOwner(ctx, a.ID, "")
+	// A genuinely newer, still-connected row under b: a real claim.
+	st.Now = func() time.Time { return base.Add(time.Hour) }
+	require.NoError(t, st.SetOwner(ctx, "d_b1", b.ID))
+	require.NoError(t, st.RecordIdentity(ctx, "d_b1", "27825550199", "b's phone now"))
+	claimed, err = st.PhoneClaimedByOtherOwner(ctx, a.ID, "27825550199", aSlot.CreatedAt)
+	require.NoError(t, err)
+	require.True(t, claimed, "b's slot is newer, still connected, and holds the same number")
+
+	// Signed out again: no longer an active claim, however recent.
+	require.NoError(t, st.MarkSignedOut(ctx, "d_b1", "", ""))
+	claimed, err = st.PhoneClaimedByOtherOwner(ctx, a.ID, "27825550199", aSlot.CreatedAt)
+	require.NoError(t, err)
+	require.False(t, claimed, "signed out again: no longer an active claim")
+
+	claimed, err = st.PhoneClaimedByOtherOwner(ctx, a.ID, "", aSlot.CreatedAt)
 	require.NoError(t, err)
 	require.False(t, claimed, "an empty number claims nothing")
 }

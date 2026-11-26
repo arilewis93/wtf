@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/aldinokemal/go-whatsapp-web-multidevice/config"
+	domainApp "github.com/aldinokemal/go-whatsapp-web-multidevice/domains/app"
 	domainDevice "github.com/aldinokemal/go-whatsapp-web-multidevice/domains/device"
 	"github.com/aldinokemal/go-whatsapp-web-multidevice/infrastructure/whatsapp"
 	"github.com/aldinokemal/go-whatsapp-web-multidevice/multiuser/account"
@@ -25,6 +26,7 @@ import (
 	"github.com/aldinokemal/go-whatsapp-web-multidevice/multiuser/web"
 	uimcp "github.com/aldinokemal/go-whatsapp-web-multidevice/ui/mcp"
 	"github.com/aldinokemal/go-whatsapp-web-multidevice/ui/mcp/oauth"
+	"github.com/aldinokemal/go-whatsapp-web-multidevice/ui/rest"
 	"github.com/aldinokemal/go-whatsapp-web-multidevice/ui/rest/middleware"
 	"github.com/aldinokemal/go-whatsapp-web-multidevice/usecase"
 	"github.com/gofiber/fiber/v3"
@@ -366,6 +368,12 @@ func Setup(s Settings, dm *whatsapp.DeviceManager, inner domainDevice.IDeviceUse
 	middleware.DeviceResolveFunc = func(c fiber.Ctx, id string) (*whatsapp.DeviceInstance, string, error) {
 		return resolver.Resolve(c.Context(), id)
 	}
+	// GET /app/devices names no device to resolve, so DeviceMiddleware's
+	// per-device ownership check above never runs for it; this is the one
+	// place that check reaches that route instead.
+	rest.FilterOwnDevicesFunc = func(ctx context.Context, all []domainApp.DevicesResponse) ([]domainApp.DevicesResponse, error) {
+		return owners.FilterOwnDevices(ctx, st, all)
+	}
 	whatsapp.EventHook = func(ctx context.Context, inst *whatsapp.DeviceInstance, evt any) {
 		sh.OnEvent(ctx, inst, evt)
 		recordSlotEvent(ctx, st, inst, evt)
@@ -447,6 +455,7 @@ func Setup(s Settings, dm *whatsapp.DeviceManager, inner domainDevice.IDeviceUse
 		}, nil)
 		if err != nil {
 			middleware.DeviceResolveFunc = nil
+			rest.FilterOwnDevicesFunc = nil
 			whatsapp.EventHook = nil
 			whatsapp.HistoryCutoffHook = nil
 			st.Close()
@@ -528,6 +537,7 @@ func (r *Runtime) Close() error {
 		r.stop()
 	}
 	middleware.DeviceResolveFunc = nil
+	rest.FilterOwnDevicesFunc = nil
 	whatsapp.EventHook = nil
 	whatsapp.HistoryCutoffHook = nil
 	usecase.MediaRootHook = nil

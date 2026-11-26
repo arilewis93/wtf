@@ -75,6 +75,46 @@ type myDevice struct {
 	State    string `json:"state"`
 }
 
+// deviceName is what a device is called when something needs to name it:
+// the owner's own label, else its phone number, else its WhatsApp display
+// name, else "unnamed" if truly nothing is known about it yet (an unfinished
+// link).
+func deviceName(d myDevice) string {
+	switch {
+	case d.Label != "":
+		return d.Label
+	case d.Phone != "":
+		return d.Phone
+	case d.Name != "":
+		return d.Name
+	default:
+		return "unnamed"
+	}
+}
+
+// devicesSummary is wtf_my_devices' text summary. Unlike the terse
+// "%d thing(s)" used for the other list tools in this file, a model that
+// never drills into the structured content still has to be able to resolve
+// a device_id from this line alone - that is the whole reason the tool
+// exists - so every device beyond the first carries its name and id. A
+// single number needs no id to disambiguate (the other tools default to it),
+// so it is left out there, matching this file's existing convention for an
+// optional device_id.
+func devicesSummary(items []myDevice) string {
+	switch len(items) {
+	case 0:
+		return "No WhatsApp numbers linked yet."
+	case 1:
+		return "1 WhatsApp number linked: " + deviceName(items[0])
+	default:
+		parts := make([]string, len(items))
+		for i, d := range items {
+			parts[i] = fmt.Sprintf("%s (%s)", deviceName(d), d.DeviceID)
+		}
+		return fmt.Sprintf("%d WhatsApp numbers linked: %s", len(items), strings.Join(parts, ", "))
+	}
+}
+
 type tools struct{ d web.Deps }
 
 // ToolFilter hides the admin tools from tools/list for anyone who is not a
@@ -205,7 +245,7 @@ func (t tools) addNumberTools(s *server.MCPServer) {
 			for _, d := range list {
 				items = append(items, myDevice{DeviceID: d.ID, Phone: d.PhoneNumber, Name: d.DisplayName, Label: d.Label, State: string(d.State)})
 			}
-			return ok(map[string]any{"total": len(items), "items": items}, fmt.Sprintf("%d WhatsApp number(s) linked", len(items)))
+			return ok(map[string]any{"total": len(items), "items": items}, devicesSummary(items))
 		}))
 
 	s.AddTool(newTool(LinkNumberTool, "Link a WhatsApp number",

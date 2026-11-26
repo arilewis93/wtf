@@ -40,7 +40,7 @@ func (l *lockedInner) addedCount() int {
 }
 
 func capped(inner domainDevice.IDeviceUsecase, st *store.Store, max int) *ScopedDevices {
-	return NewScopedDevicesCapped(inner, st, func() int { return max }).(*ScopedDevices)
+	return NewScopedDevicesCapped(inner, st, func() int { return max }, "").(*ScopedDevices)
 }
 
 func newUser(t *testing.T, st *store.Store, i int) *store.User {

@@ -12,11 +12,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
-	"strings"
 	"sync"
 
+	"github.com/aldinokemal/go-whatsapp-web-multidevice/multiuser/media"
 	"github.com/aldinokemal/go-whatsapp-web-multidevice/multiuser/store"
 	pkgError "github.com/aldinokemal/go-whatsapp-web-multidevice/pkg/error"
 	"github.com/sirupsen/logrus"
@@ -178,19 +176,9 @@ func (d *Deleter) ResumePending(ctx context.Context) error {
 	return errs
 }
 
-// removeMedia removes <MediaRoot>/<deviceID>, only when that path is a
-// direct child of the media root. A symlink there is unlinked, not followed.
-// A missing folder is done already.
+// removeMedia removes <MediaRoot>/<deviceID> through media.RemoveDevice, the
+// same helper owners.ScopedDevices uses to clean up a single unlinked
+// number's media.
 func (d *Deleter) removeMedia(deviceID string) error {
-	if d.MediaRoot == "" {
-		return nil
-	}
-	root := filepath.Clean(d.MediaRoot)
-	dir := filepath.Join(root, deviceID)
-	if deviceID == "" || deviceID == "." || deviceID == ".." ||
-		strings.ContainsAny(deviceID, `/\`) || filepath.Dir(dir) != root || filepath.Base(dir) != deviceID {
-		logrus.Warnf("[WTF] account deletion: refusing media path for device id %q (not directly under the media root)", deviceID)
-		return nil
-	}
-	return os.RemoveAll(dir)
+	return media.RemoveDevice(d.MediaRoot, deviceID)
 }

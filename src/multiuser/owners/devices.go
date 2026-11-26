@@ -8,6 +8,7 @@ import (
 	"github.com/aldinokemal/go-whatsapp-web-multidevice/domains/chatstorage"
 	domainDevice "github.com/aldinokemal/go-whatsapp-web-multidevice/domains/device"
 	"github.com/aldinokemal/go-whatsapp-web-multidevice/multiuser/auth"
+	"github.com/aldinokemal/go-whatsapp-web-multidevice/multiuser/media"
 	"github.com/aldinokemal/go-whatsapp-web-multidevice/multiuser/store"
 	pkgError "github.com/aldinokemal/go-whatsapp-web-multidevice/pkg/error"
 	"github.com/sirupsen/logrus"
@@ -21,6 +22,11 @@ type ScopedDevices struct {
 	// MaxTotal is the server-wide cap on linked numbers (WTF_MAX_PHONES).
 	// Nil or 0 means no cap.
 	MaxTotal func() int
+	// MediaRoot is where downloaded media lives, one folder per device id
+	// (see multiuser/media and account.Deleter, which cleans up the same
+	// folder when the whole account is deleted). "" skips the cleanup
+	// RemoveDevice otherwise does when a single number is unlinked.
+	MediaRoot string
 	// reserve is st.ReserveOwner; tests swap it to prove the race harness.
 	reserve reserveFunc
 }
@@ -33,13 +39,14 @@ var ErrDeviceLimitReached = pkgError.ValidationError("you have reached your limi
 var ErrServerFull = pkgError.ValidationError("There's no room for another number right now. Try again later.")
 
 func NewScopedDevices(inner domainDevice.IDeviceUsecase, st *store.Store) domainDevice.IDeviceUsecase {
-	return NewScopedDevicesCapped(inner, st, nil)
+	return NewScopedDevicesCapped(inner, st, nil, "")
 }
 
 // NewScopedDevicesCapped is NewScopedDevices with a server-wide cap on linked
-// numbers, read on every add so a changed setting applies at once.
-func NewScopedDevicesCapped(inner domainDevice.IDeviceUsecase, st *store.Store, maxTotal func() int) domainDevice.IDeviceUsecase {
-	return &ScopedDevices{inner: inner, st: st, MaxTotal: maxTotal, reserve: st.ReserveOwner}
+// numbers, read on every add so a changed setting applies at once, and
+// mediaRoot for RemoveDevice's media cleanup ("" skips it).
+func NewScopedDevicesCapped(inner domainDevice.IDeviceUsecase, st *store.Store, maxTotal func() int, mediaRoot string) domainDevice.IDeviceUsecase {
+	return &ScopedDevices{inner: inner, st: st, MaxTotal: maxTotal, MediaRoot: mediaRoot, reserve: st.ReserveOwner}
 }
 
 func (s *ScopedDevices) maxTotal() int {
@@ -139,6 +146,12 @@ func (s *ScopedDevices) rollbackAdd(ctx context.Context, id string) {
 
 // RemoveDevice also clears a "ghost": an owner row whose device the manager no
 // longer has. Without that, the row would count against the limit forever.
+// It also removes the device's downloaded media folder, the same way
+// account.Deleter does for every device when the whole account is deleted:
+// without this, unlinking one number left its media on disk forever, growing
+// without bound. That cleanup is best-effort and never blocks the unlink
+// itself (the person already lost the number; a disk problem must not trap
+// them with it still attached), but a failure is logged rather than silent.
 func (s *ScopedDevices) RemoveDevice(ctx context.Context, deviceID string) error {
 	if err := s.own(ctx, deviceID); err != nil {
 		return err
@@ -152,7 +165,13 @@ func (s *ScopedDevices) RemoveDevice(ctx context.Context, deviceID string) error
 		number = sl.LastPhone
 	}
 	_ = s.st.Audit(ctx, store.AuditEvent{UserID: u.ID, ActorID: actorID(ctx), Action: "device_remove", DeviceID: deviceID, Detail: number})
-	return s.st.RemoveOwner(ctx, deviceID)
+	if err := s.st.RemoveOwner(ctx, deviceID); err != nil {
+		return err
+	}
+	if err := media.RemoveDevice(s.MediaRoot, deviceID); err != nil {
+		logrus.WithError(err).Warnf("[WTF] unlink: could not remove media for device %s", deviceID)
+	}
+	return nil
 }
 
 func actorID(ctx context.Context) string {

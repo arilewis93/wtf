@@ -47,3 +47,30 @@ func TestUpdatePasskeyUnknown(t *testing.T) {
 	st := openTest(t)
 	require.ErrorIs(t, st.UpdatePasskeyCredential(context.Background(), "nope", []byte(`{}`)), ErrNotFound)
 }
+
+// TestDeleteUserPasskeys is the bulk counterpart of DeletePasskey: a phone
+// number change must end every passkey a user registered, not just one at a
+// time, so it needs one statement that removes them all.
+func TestDeleteUserPasskeys(t *testing.T) {
+	st := openTest(t)
+	ctx := context.Background()
+	a, _ := st.CreateUser(ctx, "+27825550100")
+	b, _ := st.CreateUser(ctx, "+27825550101")
+	require.NoError(t, st.AddPasskey(ctx, Passkey{CredentialID: "a1", UserID: a.ID, CredentialJSON: []byte(`{}`)}))
+	require.NoError(t, st.AddPasskey(ctx, Passkey{CredentialID: "a2", UserID: a.ID, CredentialJSON: []byte(`{}`)}))
+	require.NoError(t, st.AddPasskey(ctx, Passkey{CredentialID: "b1", UserID: b.ID, CredentialJSON: []byte(`{}`)}))
+
+	require.NoError(t, st.DeleteUserPasskeys(ctx, a.ID))
+
+	list, err := st.PasskeysOf(ctx, a.ID)
+	require.NoError(t, err)
+	require.Empty(t, list, "every one of a's passkeys is gone")
+
+	list, err = st.PasskeysOf(ctx, b.ID)
+	require.NoError(t, err)
+	require.Len(t, list, 1, "b's passkey is untouched")
+
+	// Nothing to delete is not an error (a user with no passkeys at all).
+	require.NoError(t, st.DeleteUserPasskeys(ctx, b.ID))
+	require.NoError(t, st.DeleteUserPasskeys(ctx, "no-such-user"))
+}

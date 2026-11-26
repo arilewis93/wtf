@@ -113,14 +113,19 @@ func mountAdmin(app *fiber.App, d Deps) {
 }
 
 // revokeCredentials ends everything that lets userID in without signing in
-// again: sessions, API keys and connected apps (OAuth grants). Disabling an
-// account and changing its number both call it, so enabling the account
-// again, or the old number, never brings an old credential back.
+// again: sessions, API keys, connected apps (OAuth grants) and passkeys.
+// Disabling an account and changing its number both call it, so enabling
+// the account again, or the old number, never brings an old credential
+// back - a passkey registered beforehand included, since it is as good a
+// way back in as any of the others.
 func revokeCredentials(ctx context.Context, d Deps, userID string) error {
 	if err := d.Store.DeleteUserSessions(ctx, userID); err != nil {
 		return err
 	}
 	if err := d.Store.RevokeAllAPIKeys(ctx, userID); err != nil {
+		return err
+	}
+	if err := d.Store.DeleteUserPasskeys(ctx, userID); err != nil {
 		return err
 	}
 	if d.Grants != nil {

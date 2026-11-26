@@ -37,6 +37,39 @@ func TestOwnership(t *testing.T) {
 	require.Empty(t, ids)
 }
 
+// TestPhoneClaimedByOtherOwner is account deletion's safety check: a phone
+// number can be released by one account and re-paired under a completely
+// different one, so "who last recorded this number" must be checked per
+// OWNER, not assumed to still be the account being deleted.
+func TestPhoneClaimedByOtherOwner(t *testing.T) {
+	st := openTest(t)
+	ctx := context.Background()
+	a, _ := st.CreateUser(ctx, "+27825550100")
+	b, _ := st.CreateUser(ctx, "+27825550101")
+	require.NoError(t, st.SetOwner(ctx, "d_a1", a.ID))
+	require.NoError(t, st.SetOwner(ctx, "d_b1", b.ID))
+	require.NoError(t, st.RecordIdentity(ctx, "d_a1", "27825550199", "A's number"))
+
+	claimed, err := st.PhoneClaimedByOtherOwner(ctx, a.ID, "27825550199")
+	require.NoError(t, err)
+	require.False(t, claimed, "only a's own slot holds it")
+
+	claimed, err = st.PhoneClaimedByOtherOwner(ctx, b.ID, "27825550199")
+	require.NoError(t, err)
+	require.True(t, claimed, "a's slot, not b's, holds it")
+
+	// Re-paired under b, the number now belongs to a slot excluded from a's
+	// own check too (the query is "any OTHER owner", not "any other slot").
+	require.NoError(t, st.RecordIdentity(ctx, "d_b1", "27825550199", "B's phone now"))
+	claimed, err = st.PhoneClaimedByOtherOwner(ctx, a.ID, "27825550199")
+	require.NoError(t, err)
+	require.True(t, claimed, "b now also holds it")
+
+	claimed, err = st.PhoneClaimedByOtherOwner(ctx, a.ID, "")
+	require.NoError(t, err)
+	require.False(t, claimed, "an empty number claims nothing")
+}
+
 func TestReserveOwnerEnforcesLimitAtomically(t *testing.T) {
 	st := openTest(t)
 	ctx := context.Background()

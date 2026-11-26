@@ -21,6 +21,25 @@ func (s *Store) OwnerOf(ctx context.Context, deviceID string) (string, error) {
 	return userID, err
 }
 
+// PhoneClaimedByOtherOwner reports whether any slot NOT owned by
+// excludeUserID currently remembers phone (bare digits, as last_phone
+// stores it) as its last-known number. A phone number is not permanently
+// bound to one account: it can be released by one and re-paired under a
+// completely different one later. Account deletion calls this before
+// clearing chat data under that number's JID, because that chat partition
+// then belongs to whoever holds the number now, not to whoever used to -
+// deleting it on behalf of the account being removed would destroy a
+// different, live account's current chat history.
+func (s *Store) PhoneClaimedByOtherOwner(ctx context.Context, excludeUserID, phone string) (bool, error) {
+	if phone == "" {
+		return false, nil
+	}
+	var n int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(1) FROM device_owners WHERE last_phone = ? AND user_id != ?`, phone, excludeUserID).Scan(&n)
+	return n > 0, err
+}
+
 func (s *Store) DevicesOf(ctx context.Context, userID string) ([]string, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT device_id FROM device_owners WHERE user_id = ? ORDER BY created_at, device_id`, userID)

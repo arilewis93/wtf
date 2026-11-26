@@ -64,6 +64,23 @@ func DeviceMiddleware(dm *whatsapp.DeviceManager) fiber.Handler {
 			instance, resolvedID, err = dm.ResolveDevice(deviceID)
 		}
 		if err != nil {
+			// WTF: a validation-style error (e.g. "more than one of your
+			// WhatsApp numbers is named X; rename one...") carries its own
+			// real message and status, and must win even though - like a
+			// genuine "not found" - it carries a non-empty resolved/typed id
+			// (the ambiguous label itself). Tried before the blanket
+			// "non-empty id -> 404" fallback below, which would otherwise
+			// swallow it into a generic, unhelpful DEVICE_NOT_FOUND.
+			// pkgError.ErrDeviceNotFound deliberately does NOT match this: it
+			// is a notFoundError, not a ValidationError, so the real "device
+			// truly not found" case is unaffected.
+			var validation pkgError.ValidationError
+			if DeviceResolveFunc != nil && errors.As(err, &validation) {
+				return c.Status(validation.StatusCode()).JSON(utils.ResponseData{
+					Status: validation.StatusCode(), Code: validation.ErrCode(), Message: validation.Error(),
+				})
+			}
+
 			// ResolveDevice returns an ID when provided but missing; use it for payload clarity.
 			if resolvedID != "" || strings.TrimSpace(deviceID) != "" {
 				return c.Status(fiber.StatusNotFound).JSON(utils.ResponseData{

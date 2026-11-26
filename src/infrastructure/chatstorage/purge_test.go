@@ -231,6 +231,39 @@ func TestPurgeRemovesAnEmptyOldChat(t *testing.T) {
 	require.True(t, chatExists(t, repo, devB, chat2))
 }
 
+// Behaviour: an empty old chat carrying a disappearing-message timer
+// (ephemeral_expiration != 0) is kept, timer and all, rather than deleted
+// and the setting silently reset to off the next time a message recreates
+// the row.
+func TestPurgeKeepsAnEmptyChatWithADisappearingTimer(t *testing.T) {
+	repo := newTestSQLiteRepository(t)
+	require.NoError(t, repo.StoreChat(&domainChatStorage.Chat{
+		DeviceID: devA, JID: chat1, Name: "name", LastMessageTime: purgeCutoff.Add(-time.Hour), EphemeralExpiration: 604800,
+	}))
+
+	res, err := repo.PurgeMessagesBefore(purgeCutoff)
+	require.NoError(t, err)
+	require.Zero(t, res.Chats, "the chat row must survive")
+	require.True(t, chatExists(t, repo, devA, chat1))
+
+	chat, err := repo.GetChatByDevice(devA, chat1)
+	require.NoError(t, err)
+	require.NotNil(t, chat)
+	require.Equal(t, uint32(604800), chat.EphemeralExpiration, "the timer itself must survive, not just the row")
+}
+
+// Behaviour (no regression): an empty old chat with the default/zero timer
+// is still purged exactly as before.
+func TestPurgeStillRemovesAnEmptyOldChatWithNoTimer(t *testing.T) {
+	repo := newTestSQLiteRepository(t)
+	storeChat(t, repo, devA, chat1, purgeCutoff.Add(-time.Hour))
+
+	res, err := repo.PurgeMessagesBefore(purgeCutoff)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), res.Chats)
+	require.False(t, chatExists(t, repo, devA, chat1))
+}
+
 // Behaviour: pending (and every other) scheduled send, the device registry and
 // Chatwoot device configs are configuration and are never touched.
 func TestPurgeNeverTouchesScheduledSends(t *testing.T) {

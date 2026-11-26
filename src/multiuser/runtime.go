@@ -317,7 +317,7 @@ func Setup(s Settings, dm *whatsapp.DeviceManager, inner domainDevice.IDeviceUse
 	capSvc := capacity.Service{Store: st, MaxPhones: s.MaxPhones}
 	// The server-wide cap is read on every add, in the same statement that
 	// reserves the slot (store.ReserveOwner).
-	devices := owners.NewScopedDevicesCapped(inner, st, func() int { return s.MaxPhones })
+	devices := owners.NewScopedDevicesCapped(inner, st, func() int { return s.MaxPhones }, config.PathMedia)
 
 	// A read failure here (a transient SQLite error, a saturated connection
 	// pool) used to come back as "", which the sign-in handler cannot tell

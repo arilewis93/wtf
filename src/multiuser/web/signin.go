@@ -15,6 +15,17 @@ import (
 
 const pkCookie = "wtf_pk"
 
+// passkeyLoginMaxPerIP and passkeyLoginWindow bound anonymous
+// POST /auth/passkey/login/begin attempts per source IP (Deps.PasskeyLoginLimiter
+// overrides this, mainly for tests). A handful of attempts a minute is plenty
+// for a real sign-in; it keeps one address from filling the shared, bounded
+// ceremony store (passkey.defaultMax, within passkey.ceremonyTTL) and
+// starting to refuse everybody else's passkey sign-in with ErrBusy.
+const (
+	passkeyLoginMaxPerIP = 10
+	passkeyLoginWindow   = time.Minute
+)
+
 // nextCookie carries where to go after sign-in from /signin to the verify
 // page in the same browser, since the WhatsApp reply link cannot carry it.
 // Only SafeNext's same-origin relative paths are ever stored or followed.
@@ -45,6 +56,10 @@ func waLinkButton(link string) template.HTML {
 }
 
 func mountSignin(app *fiber.App, d Deps) {
+	loginLimiter := d.PasskeyLoginLimiter
+	if loginLimiter == nil {
+		loginLimiter = signin.NewLimiter(passkeyLoginMaxPerIP, passkeyLoginWindow)
+	}
 	app.Get("/signin", func(c fiber.Ctx) error {
 		if _, ok := userOf(c); ok {
 			return c.Redirect().Status(fiber.StatusSeeOther).To("/")
@@ -118,6 +133,12 @@ func mountSignin(app *fiber.App, d Deps) {
 		return c.Redirect().Status(fiber.StatusSeeOther).To("/signin")
 	})
 	app.Post("/auth/passkey/login/begin", d.Auth.RequireSameOrigin(), func(c fiber.Ctx) error {
+		// Public and unauthenticated: a per-account limit is not an option,
+		// so this is per source IP. Any doubt (including an empty/unknown
+		// address) counts against the limiter rather than skipping it.
+		if !loginLimiter.Allow(c.IP(), time.Now()) {
+			return fiber.NewError(fiber.StatusTooManyRequests, "Too many passkey sign-in attempts from this address. Please try again in a few minutes.")
+		}
 		opts, id, err := d.Passkeys.BeginLogin(c.Context())
 		if err != nil {
 			return err

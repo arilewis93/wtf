@@ -70,6 +70,39 @@ func TestDeviceResolveFuncPassesOwnershipErrorMessages(t *testing.T) {
 	}
 }
 
+// A ValidationError from the resolver (e.g. two of the user's own devices
+// sharing a label) must reach the caller with its own message and status,
+// not the generic 404 DEVICE_NOT_FOUND - even though, like a real "not
+// found", it carries a non-empty resolved/typed id (the ambiguous label
+// itself). Regression for the "ambiguous label" fix: the blanket
+// "resolvedID or deviceID non-empty -> 404" branch used to run first and
+// swallow this.
+func TestDeviceResolveFuncPassesAmbiguousLabelMessage(t *testing.T) {
+	dm := whatsapp.NewDeviceManager(nil, nil, nil)
+	saved := DeviceResolveFunc
+	t.Cleanup(func() { DeviceResolveFunc = saved })
+	ambiguous := pkgError.ValidationError(`more than one of your WhatsApp numbers is named "office"; rename one so the names differ, or pass its device_id`)
+	DeviceResolveFunc = func(_ fiber.Ctx, id string) (*whatsapp.DeviceInstance, string, error) {
+		return nil, id, ambiguous // resolvedID is the typed label, not empty
+	}
+
+	app := fiber.New()
+	app.Get("/x", DeviceMiddleware(dm), func(c fiber.Ctx) error { return c.SendString("reached") })
+
+	req := httptest.NewRequest(http.MethodGet, "/x", nil)
+	req.Header.Set(DeviceIDHeader, "office")
+	resp, err := app.Test(req)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusBadRequest, resp.StatusCode, "the ValidationError's own status, not a generic 404")
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	var got utils.ResponseData
+	require.NoError(t, json.Unmarshal(body, &got))
+	require.Equal(t, ambiguous.Error(), got.Message)
+	require.Equal(t, "VALIDATION_ERROR", got.Code)
+	require.NotEqual(t, "DEVICE_NOT_FOUND", got.Code)
+}
+
 // With no hook installed the middleware is upstream's: the only device is the default.
 func TestDeviceResolveFuncNilKeepsUpstreamBehaviour(t *testing.T) {
 	saved := DeviceResolveFunc

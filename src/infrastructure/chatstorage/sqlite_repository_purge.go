@@ -236,13 +236,19 @@ func (r *SQLiteRepository) purgeOrphans(o orphanSweep, cutoff, prefilter time.Ti
 
 // purgeEmptyChats deletes chats with no messages left whose own last message
 // time is past the cutoff. Rows with a zero last message time hold only a
-// push name and are kept.
+// push name and are kept. A chat carrying a non-zero ephemeral_expiration
+// (the user's own disappearing-message timer; see StoreChat and the message
+// handler, which go out of their way to preserve it) is also kept: deleting
+// the row here would silently reset that setting to off the moment a later
+// message recreates the chat, which is a privacy choice, not purge-eligible
+// data. Only the chat row is kept; its messages were already purged above.
 func (r *SQLiteRepository) purgeEmptyChats(cutoff, prefilter time.Time) (int64, error) {
 	const noMessages = `NOT EXISTS (SELECT 1 FROM messages m WHERE m.chat_jid = chats.jid AND m.device_id = chats.device_id)`
+	const noTimer = `(ephemeral_expiration IS NULL OR ephemeral_expiration = 0)`
 	var total, after int64
 	for {
 		page, err := r.scanStamps(`SELECT rowid, CAST(last_message_time AS TEXT) FROM chats
-			WHERE rowid > ? AND last_message_time < ? AND `+noMessages+` ORDER BY rowid LIMIT ?`, after, prefilter, purgeBatchSize)
+			WHERE rowid > ? AND last_message_time < ? AND `+noMessages+` AND `+noTimer+` ORDER BY rowid LIMIT ?`, after, prefilter, purgeBatchSize)
 		if err != nil {
 			return total, fmt.Errorf("purge: list chats: %w", err)
 		}
@@ -261,7 +267,9 @@ func (r *SQLiteRepository) purgeEmptyChats(cutoff, prefilter time.Time) (int64, 
 			}
 			var n int64
 			for _, k := range old {
-				res, err := tx.Exec(`DELETE FROM chats WHERE rowid = ? AND CAST(last_message_time AS TEXT) = ? AND `+noMessages, k.rowid, k.stamp)
+				// Re-check both conditions at delete time: a message or a
+				// new timer landing between the select and here must win.
+				res, err := tx.Exec(`DELETE FROM chats WHERE rowid = ? AND CAST(last_message_time AS TEXT) = ? AND `+noMessages+` AND `+noTimer, k.rowid, k.stamp)
 				if err != nil {
 					_ = tx.Rollback()
 					return total, fmt.Errorf("purge: delete chat: %w", err)

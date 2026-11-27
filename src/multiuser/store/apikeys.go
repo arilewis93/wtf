@@ -13,6 +13,18 @@ import (
 // header, a log scanner or a leaked file.
 const APIKeyPrefix = "wtfk_"
 
+// ScopeFull is an ordinary personal key: it can do everything its owner can
+// do with their own numbers. Every key made before scope existed, and every
+// key CreateAPIKey makes, is this scope.
+const ScopeFull = "full"
+
+// ScopeProvisioning is a narrow key, minted only by a superadmin
+// (CreateProvisioningAPIKey), good for exactly one thing: the combined
+// create-user-and-mint-its-key endpoint. Every other route refuses it,
+// enforced by registration order in the REST gate chain
+// (multiuser/runtime.go), not by a check this package could forget to add.
+const ScopeProvisioning = "provisioning"
+
 // MaxAPIKeysPerUser is how many live keys one person may hold.
 const MaxAPIKeysPerUser = 10
 
@@ -31,14 +43,29 @@ type APIKey struct {
 	UserID     string
 	Prefix     string // the first 6 characters after APIKeyPrefix, for display
 	Name       string
+	Scope      string // ScopeFull or ScopeProvisioning
 	CreatedAt  time.Time
 	LastUsedAt *time.Time
 }
 
-// CreateAPIKey makes a key for userID and returns the raw key, which is never
-// stored or shown again. The live-key count and the insert are one statement,
-// so concurrent creates cannot take a user past MaxAPIKeysPerUser.
+// CreateAPIKey makes an ordinary, full-scope key for userID and returns the
+// raw key, which is never stored or shown again. The live-key count and the
+// insert are one statement, so concurrent creates cannot take a user past
+// MaxAPIKeysPerUser.
 func (s *Store) CreateAPIKey(ctx context.Context, userID, name string) (string, *APIKey, error) {
+	return s.createAPIKey(ctx, userID, name, ScopeFull)
+}
+
+// CreateProvisioningAPIKey makes a provisioning-scoped key for userID: the
+// same shape and the same limits as CreateAPIKey, but a key every other
+// route refuses outright (see ScopeProvisioning). The account page's
+// new-key route is the only caller, and only when the person signed in is a
+// superadmin.
+func (s *Store) CreateProvisioningAPIKey(ctx context.Context, userID, name string) (string, *APIKey, error) {
+	return s.createAPIKey(ctx, userID, name, ScopeProvisioning)
+}
+
+func (s *Store) createAPIKey(ctx context.Context, userID, name, scope string) (string, *APIKey, error) {
 	name = strings.TrimSpace(name)
 	if name == "" || utf8.RuneCountInString(name) > MaxAPIKeyNameLen {
 		return "", nil, ErrInvalid
@@ -49,13 +76,14 @@ func (s *Store) CreateAPIKey(ctx context.Context, userID, name string) (string, 
 		UserID:    userID,
 		Prefix:    raw[len(APIKeyPrefix) : len(APIKeyPrefix)+6],
 		Name:      name,
+		Scope:     scope,
 		CreatedAt: s.now(),
 	}
 	res, err := s.db.ExecContext(ctx,
-		`INSERT INTO api_keys (id, user_id, key_hash, prefix, name, created_at)
-		 SELECT ?, ?, ?, ?, ?, ?
+		`INSERT INTO api_keys (id, user_id, key_hash, prefix, name, scope, created_at)
+		 SELECT ?, ?, ?, ?, ?, ?, ?
 		 WHERE (SELECT COUNT(*) FROM api_keys WHERE user_id = ? AND revoked_at IS NULL) < ?`,
-		k.ID, userID, HashToken(raw), k.Prefix, k.Name, k.CreatedAt, userID, MaxAPIKeysPerUser)
+		k.ID, userID, HashToken(raw), k.Prefix, k.Name, k.Scope, k.CreatedAt, userID, MaxAPIKeysPerUser)
 	if err != nil {
 		return "", nil, err
 	}
@@ -114,32 +142,33 @@ func (s *Store) RevokeAllAPIKeys(ctx context.Context, userID string) error {
 	return err
 }
 
-// UserByAPIKey returns the owner of a live key and the key's id. Anything
-// else (no prefix, unknown, revoked) is ErrNotFound. The user's status is the
-// caller's to check: it is read fresh here on every call.
-func (s *Store) UserByAPIKey(ctx context.Context, raw string) (*User, string, error) {
+// UserByAPIKey returns the owner of a live key, the key's id and its scope
+// (ScopeFull or ScopeProvisioning). Anything else (no prefix, unknown,
+// revoked) is ErrNotFound. The user's status is the caller's to check: it is
+// read fresh here on every call.
+func (s *Store) UserByAPIKey(ctx context.Context, raw string) (*User, string, string, error) {
 	if !strings.HasPrefix(raw, APIKeyPrefix) || len(raw) == len(APIKeyPrefix) {
-		return nil, "", ErrNotFound
+		return nil, "", "", ErrNotFound
 	}
-	var keyID string
+	var keyID, scope string
 	row := s.db.QueryRowContext(ctx,
-		`SELECT k.id, u.id, u.phone, u.status, u.max_devices, u.created_at, u.last_login_at
+		`SELECT k.id, k.scope, u.id, u.phone, u.status, u.max_devices, u.created_at, u.last_login_at
 		 FROM api_keys k JOIN users u ON u.id = k.user_id
 		 WHERE k.key_hash = ? AND k.revoked_at IS NULL`, HashToken(raw))
 	var u User
 	var last sql.NullTime
-	err := row.Scan(&keyID, &u.ID, &u.Phone, &u.Status, &u.MaxDevices, &u.CreatedAt, &last)
+	err := row.Scan(&keyID, &scope, &u.ID, &u.Phone, &u.Status, &u.MaxDevices, &u.CreatedAt, &last)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, "", ErrNotFound
+		return nil, "", "", ErrNotFound
 	}
 	if err != nil {
-		return nil, "", err
+		return nil, "", "", err
 	}
 	if last.Valid {
 		t := last.Time
 		u.LastLoginAt = &t
 	}
-	return &u, keyID, nil
+	return &u, keyID, scope, nil
 }
 
 // TouchAPIKey records that a key was used, at most once per key every five

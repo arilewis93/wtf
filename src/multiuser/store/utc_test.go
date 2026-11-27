@@ -203,6 +203,8 @@ func TestOldNonUTCRowsAreRewrittenToUTC(t *testing.T) {
 	require.GreaterOrEqual(t, idx, 0, "migrateTimesToUTC must still be one of the migrations")
 	_, err = st.db.Exec(`ALTER TABLE device_owners DROP COLUMN last_attempt_at`)
 	require.NoError(t, err)
+	_, err = st.db.Exec(`ALTER TABLE api_keys DROP COLUMN scope`)
+	require.NoError(t, err)
 	_, err = st.db.Exec(`UPDATE wtf_schema SET version = ?`, idx)
 	require.NoError(t, err)
 	require.NoError(t, st.Close())

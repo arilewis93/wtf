@@ -29,7 +29,7 @@ func Middleware(srv *oauth.Server, am *auth.Manager, st *store.Store) fiber.Hand
 		am.ForgetSession(c)
 		header := c.Get(fiber.HeaderAuthorization)
 		if raw, ok := auth.BearerAPIKey(header); ok {
-			u, keyID, err := st.UserByAPIKey(c.Context(), raw)
+			u, keyID, _, err := st.UserByAPIKey(c.Context(), raw)
 			if err != nil && !errors.Is(err, store.ErrNotFound) {
 				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 					"status": fiber.StatusInternalServerError, "code": "INTERNAL_ERROR", "message": "could not check your API key",

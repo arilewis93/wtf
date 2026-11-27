@@ -44,7 +44,7 @@
         <h2 class="dialog-title" id="new-key-title">New API key</h2>
         <button type="button" class="icon-btn icon-btn-bare" data-close-dialog aria-label="Close">{{icon "x"}}</button>
       </div>
-      <div id="new-key-body" class="link-body">{{template "new_key_form" (dict "CSRF" .CSRF)}}</div>
+      <div id="new-key-body" class="link-body">{{template "new_key_form" (dict "CSRF" .CSRF "Superadmin" .Superadmin)}}</div>
     </div>
   </dialog>
   {{end}}
@@ -66,7 +66,7 @@
   <div class="dialog-foot"><button type="button" class="btn btn-secondary" data-close-dialog>Done</button></div>
 </div>
 {{else}}
-{{template "new_key_form" (dict "CSRF" .CSRF "Name" .Data.Name "Error" .Data.Error)}}
+{{template "new_key_form" (dict "CSRF" .CSRF "Name" .Data.Name "Error" .Data.Error "Superadmin" .Superadmin)}}
 {{end}}
 {{end}}
 
@@ -79,6 +79,12 @@
     <input class="input" id="new-key-name" type="text" name="name" maxlength="60" autocomplete="off"
            placeholder="Laptop script" value="{{.Name}}" required{{if .Error}} aria-invalid="true" aria-describedby="new-key-error"{{end}}>
   </div>
+  {{if .Superadmin}}
+  <label class="check">
+    <input type="checkbox" name="provisioning" value="on">
+    <span>Provisioning key. Can only create a new WTF user and hand back that user's own key - nothing with your numbers, nothing else on this account.</span>
+  </label>
+  {{end}}
   {{if .Error}}<p class="form-error" id="new-key-error" role="alert">{{.Error}}</p>{{end}}
   <div class="dialog-foot">
     <button type="button" class="btn btn-secondary" data-close-dialog>Cancel</button>

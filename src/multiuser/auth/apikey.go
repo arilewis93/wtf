@@ -33,7 +33,7 @@ func (m *Manager) APIKey() fiber.Handler {
 		if !ok {
 			return c.Next()
 		}
-		u, keyID, err := m.st.UserByAPIKey(c.Context(), raw)
+		u, keyID, scope, err := m.st.UserByAPIKey(c.Context(), raw)
 		if err != nil && !errors.Is(err, store.ErrNotFound) {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 				"status": fiber.StatusInternalServerError, "code": "INTERNAL_ERROR", "message": "could not check your API key",
@@ -51,7 +51,9 @@ func (m *Manager) APIKey() fiber.Handler {
 		c.Locals(keyRaw, "")
 		c.Locals(keyUser, u)
 		c.Locals(keyVia, viaAPIKey)
-		c.SetContext(WithUser(c.Context(), u))
+		ctx := WithUser(c.Context(), u)
+		ctx = WithKeyScope(ctx, scope)
+		c.SetContext(ctx)
 		_ = m.st.TouchAPIKey(c.Context(), keyID) // throttled in the store; a failure must not refuse the call
 		return c.Next()
 	}

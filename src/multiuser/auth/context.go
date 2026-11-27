@@ -30,3 +30,21 @@ func ActorFrom(ctx context.Context) (*store.User, bool) {
 	u, ok := ctx.Value(actorKey{}).(*store.User)
 	return u, ok && u != nil
 }
+
+type keyScopeKey struct{}
+
+// WithKeyScope marks ctx as authenticated by an API key of this scope
+// (store.ScopeFull or store.ScopeProvisioning). APIKey() sets it for every
+// key-authenticated request; a cookie session never sets it at all, so
+// KeyScopeFrom reports false for an ordinary signed-in person.
+func WithKeyScope(ctx context.Context, scope string) context.Context {
+	return context.WithValue(ctx, keyScopeKey{}, scope)
+}
+
+// KeyScopeFrom mirrors UserFrom: it reports the scope an API key
+// authenticated this request with, or ("", false) when the request was not
+// authenticated by a key at all (a cookie session, or nothing).
+func KeyScopeFrom(ctx context.Context) (string, bool) {
+	s, ok := ctx.Value(keyScopeKey{}).(string)
+	return s, ok && s != ""
+}

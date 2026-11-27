@@ -20,6 +20,17 @@ func createKey(t *testing.T, e *env, ck *http.Cookie, name string) (*http.Respon
 	return postForm(t, e, ck, "/account/api-keys", url.Values{"csrf": {csrfFor(t, e, ck)}, "name": {name}})
 }
 
+// createKeyAskingForProvisioning posts the new-key form with the
+// "provisioning" checkbox ticked, the same as a superadmin's browser would
+// send it. Whether the resulting key is actually provisioning-scoped depends
+// on the caller: the route must decide that itself from who is signed in,
+// never from this flag alone.
+func createKeyAskingForProvisioning(t *testing.T, e *env, ck *http.Cookie, name string) (*http.Response, string) {
+	t.Helper()
+	return postForm(t, e, ck, "/account/api-keys",
+		url.Values{"csrf": {csrfFor(t, e, ck)}, "name": {name}, "provisioning": {"on"}})
+}
+
 // Behaviour + security: the raw key is in the create response, works, and is
 // never shown again; the list shows only its name and prefix.
 func TestCreateKeyShowsItOnce(t *testing.T) {
@@ -33,7 +44,7 @@ func TestCreateKeyShowsItOnce(t *testing.T) {
 	require.Contains(t, body, "https://wtf.onrender.com/devices", "the usage line names this server")
 	require.Equal(t, "no-store", resp.Header.Get("Cache-Control"))
 
-	u, _, err := e.st.UserByAPIKey(context.Background(), raw)
+	u, _, _, err := e.st.UserByAPIKey(context.Background(), raw)
 	require.NoError(t, err)
 	require.Equal(t, me, u.ID)
 
@@ -87,7 +98,7 @@ func TestRevokeOwnKey(t *testing.T) {
 	resp, _ := postForm(t, e, ck, "/account/api-keys/"+k.ID+"/revoke", url.Values{"csrf": {csrfFor(t, e, ck)}})
 	require.Equal(t, http.StatusSeeOther, resp.StatusCode)
 	require.Equal(t, "/account", resp.Header.Get("Location"))
-	_, _, err = e.st.UserByAPIKey(context.Background(), raw)
+	_, _, _, err = e.st.UserByAPIKey(context.Background(), raw)
 	require.ErrorIs(t, err, store.ErrNotFound)
 }
 
@@ -101,7 +112,7 @@ func TestRevokeAnotherUsersKeyIs404(t *testing.T) {
 	resp, _ := postForm(t, e, ck, "/account/api-keys/"+k.ID+"/revoke", url.Values{"csrf": {csrfFor(t, e, ck)}})
 	require.Equal(t, http.StatusNotFound, resp.StatusCode)
 	require.Contains(t, resp.Header.Get("Content-Type"), "text/html", "a page route answers with a page")
-	_, _, err = e.st.UserByAPIKey(context.Background(), raw)
+	_, _, _, err = e.st.UserByAPIKey(context.Background(), raw)
 	require.NoError(t, err)
 
 	_, page := fetchPage(t, e, ck, "/account")
@@ -169,4 +180,71 @@ func TestKeyActionsAreAuditedWithoutTheKey(t *testing.T) {
 	}
 	require.Contains(t, actions, "api_key_created")
 	require.Contains(t, actions, "api_key_revoked")
+}
+
+// Shape: the checkbox that mints a provisioning-scoped key is offered only
+// to a superadmin viewer, never to an ordinary one.
+func TestProvisioningCheckboxShownOnlyToSuperadmin(t *testing.T) {
+	e := withDevices(t, &devStub{})
+	admin, _ := signedIn(t, e, "+27825550100")
+	_, page := fetchPage(t, e, admin, "/account")
+	require.Contains(t, page, `name="provisioning"`, "a superadmin is offered the checkbox")
+
+	plain, _ := signedIn(t, e, "+27825550101")
+	_, page = fetchPage(t, e, plain, "/account")
+	require.NotContains(t, page, `name="provisioning"`, "an ordinary user never sees it")
+}
+
+// Security: posting the provisioning flag as a non-superadmin never makes a
+// provisioning-scoped key - the flag is ignored and an ordinary (full-scope)
+// key is made instead, exactly as an unchecked box would. There is no way to
+// mint a provisioning key except as a superadmin, whatever the form carries.
+func TestProvisioningFlagIsIgnoredForANonSuperadmin(t *testing.T) {
+	e := withDevices(t, &devStub{})
+	ck, me := signedIn(t, e, "+27825550101")
+	resp, body := createKeyAskingForProvisioning(t, e, ck, "sneaky")
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	raw := rawKeyRe.FindString(body)
+	require.NotEmpty(t, raw, "a key is still made")
+
+	_, _, scope, err := e.st.UserByAPIKey(context.Background(), raw)
+	require.NoError(t, err)
+	require.Equal(t, store.ScopeFull, scope, "never provisioning, whatever the form posted")
+
+	keys, _ := e.st.APIKeysOf(context.Background(), me)
+	require.Len(t, keys, 1)
+}
+
+// Behaviour: a superadmin ticking the checkbox really does get a
+// provisioning-scoped key, and the raw key is shown once exactly like an
+// ordinary one.
+func TestSuperadminCheckboxMintsAProvisioningScopedKey(t *testing.T) {
+	e := withDevices(t, &devStub{})
+	admin, adminID := signedIn(t, e, "+27825550100")
+	resp, body := createKeyAskingForProvisioning(t, e, admin, "ChattER provisioning")
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	raw := rawKeyRe.FindString(body)
+	require.NotEmpty(t, raw)
+
+	_, _, scope, err := e.st.UserByAPIKey(context.Background(), raw)
+	require.NoError(t, err)
+	require.Equal(t, store.ScopeProvisioning, scope)
+
+	keys, _ := e.st.APIKeysOf(context.Background(), adminID)
+	require.Len(t, keys, 1)
+}
+
+// Behaviour: leaving the checkbox unticked, even as a superadmin, still
+// makes an ordinary full-scope key - the checkbox is opt-in, never default.
+func TestSuperadminWithoutTheCheckboxGetsAnOrdinaryKey(t *testing.T) {
+	e := withDevices(t, &devStub{})
+	admin, _ := signedIn(t, e, "+27825550100")
+	resp, body := createKey(t, e, admin, "ordinary admin key")
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	raw := rawKeyRe.FindString(body)
+	require.NotEmpty(t, raw)
+
+	_, _, scope, err := e.st.UserByAPIKey(context.Background(), raw)
+	require.NoError(t, err)
+	require.Equal(t, store.ScopeFull, scope)
 }

@@ -18,7 +18,6 @@ const (
 // its last link was refused. It survives the WhatsApp session being cleared.
 type Slot struct {
 	DeviceID    string
-	CreatedAt   time.Time
 	LastPhone   string
 	LastName    string
 	SignedOutAt *time.Time
@@ -37,7 +36,7 @@ func nullTimePtr(n sql.NullTime) *time.Time {
 // SlotsOf returns the user's slots keyed by device id.
 func (s *Store) SlotsOf(ctx context.Context, userID string) (map[string]Slot, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT device_id, created_at, last_phone, last_name, signed_out_at, last_refusal, last_refusal_at
+		`SELECT device_id, last_phone, last_name, signed_out_at, last_refusal, last_refusal_at
 		 FROM device_owners WHERE user_id = ?`, userID)
 	if err != nil {
 		return nil, err
@@ -47,7 +46,7 @@ func (s *Store) SlotsOf(ctx context.Context, userID string) (map[string]Slot, er
 	for rows.Next() {
 		var sl Slot
 		var out1, ref sql.NullTime
-		if err := rows.Scan(&sl.DeviceID, &sl.CreatedAt, &sl.LastPhone, &sl.LastName, &out1, &sl.Refusal, &ref); err != nil {
+		if err := rows.Scan(&sl.DeviceID, &sl.LastPhone, &sl.LastName, &out1, &sl.Refusal, &ref); err != nil {
 			return nil, err
 		}
 		sl.SignedOutAt, sl.RefusalAt = nullTimePtr(out1), nullTimePtr(ref)
@@ -100,8 +99,8 @@ func (s *Store) SlotOf(ctx context.Context, deviceID string) (Slot, error) {
 	var sl Slot
 	var out1, ref sql.NullTime
 	err := s.db.QueryRowContext(ctx,
-		`SELECT device_id, created_at, last_phone, last_name, signed_out_at, last_refusal, last_refusal_at
-		 FROM device_owners WHERE device_id = ?`, deviceID).Scan(&sl.DeviceID, &sl.CreatedAt, &sl.LastPhone, &sl.LastName, &out1, &sl.Refusal, &ref)
+		`SELECT device_id, last_phone, last_name, signed_out_at, last_refusal, last_refusal_at
+		 FROM device_owners WHERE device_id = ?`, deviceID).Scan(&sl.DeviceID, &sl.LastPhone, &sl.LastName, &out1, &sl.Refusal, &ref)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Slot{}, ErrNotFound
 	}

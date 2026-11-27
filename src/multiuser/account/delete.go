@@ -13,7 +13,6 @@ import (
 	"errors"
 	"fmt"
 	"sync"
-	"time"
 
 	"github.com/aldinokemal/go-whatsapp-web-multidevice/multiuser/media"
 	"github.com/aldinokemal/go-whatsapp-web-multidevice/multiuser/store"
@@ -136,7 +135,7 @@ func (d *Deleter) Delete(ctx context.Context, userID string) error {
 		// without resetting chat storage back to the slot id. The owner
 		// record (device_owners.last_phone) still has it, so this is the
 		// one place left to recover it.
-		lastPhone, lastJID, pairedAt := lastKnownIdentity(ctx, d.Store, id)
+		lastPhone, lastJID := lastKnownIdentity(ctx, d.Store, id)
 		if err := d.Devices.RemoveDevice(ctx, id); err != nil && !errors.Is(err, pkgError.ErrDeviceNotFound) {
 			return fmt.Errorf("remove device %s: %w", id, err)
 		}
@@ -153,7 +152,7 @@ func (d *Deleter) Delete(ctx context.Context, userID string) error {
 				// would destroy a different, live account's current chat
 				// history (found in review, the same category of bug this
 				// whole fix closes, in the other direction).
-				claimed, err := d.Store.PhoneClaimedByOtherOwner(ctx, u.ID, lastPhone, pairedAt)
+				claimed, err := d.Store.PhoneClaimedByOtherOwner(ctx, u.ID, lastPhone)
 				if err != nil {
 					return fmt.Errorf("checking phone claim for %s: %w", id, err)
 				}
@@ -213,19 +212,18 @@ func (d *Deleter) removeMedia(deviceID string) error {
 	return media.RemoveDevice(d.MediaRoot, deviceID)
 }
 
-// lastKnownIdentity recovers the bare phone number, the phone JID chat
-// storage used, and when the slot itself was reserved (its created_at), all
-// for deviceID, from the owner record rather than the live DeviceInstance:
-// recordSlotEvent (multiuser/runtime.go) writes device_owners.last_phone on
-// every events.Connected and keeps it through a later events.LoggedOut
-// (MarkSignedOut), so it still has the number even after a remote logout
-// has cleared the live instance's own JID (DeviceInstance.ResetClient).
-// Empty phone/jid means no number was ever recorded for this slot (never
-// paired, or the slot row is already gone); pairedAt is then the zero time.
-func lastKnownIdentity(ctx context.Context, st *store.Store, deviceID string) (phone, jid string, pairedAt time.Time) {
+// lastKnownIdentity recovers the bare phone number and the phone JID chat
+// storage used for deviceID, from the owner record rather than the live
+// DeviceInstance: recordSlotEvent (multiuser/runtime.go) writes
+// device_owners.last_phone on every events.Connected and keeps it through a
+// later events.LoggedOut (MarkSignedOut), so it still has the number even
+// after a remote logout has cleared the live instance's own JID
+// (DeviceInstance.ResetClient). Both empty means no number was ever
+// recorded for this slot (never paired, or the slot row is already gone).
+func lastKnownIdentity(ctx context.Context, st *store.Store, deviceID string) (phone, jid string) {
 	sl, err := st.SlotOf(ctx, deviceID)
 	if err != nil || sl.LastPhone == "" {
-		return "", "", time.Time{}
+		return "", ""
 	}
-	return sl.LastPhone, types.NewJID(sl.LastPhone, types.DefaultUserServer).String(), sl.CreatedAt
+	return sl.LastPhone, types.NewJID(sl.LastPhone, types.DefaultUserServer).String()
 }

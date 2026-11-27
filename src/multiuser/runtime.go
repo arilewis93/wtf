@@ -500,8 +500,10 @@ func userAgentToken(name string) string {
 //     an API key; a 401 with the Bearer challenge otherwise). Neither may sit
 //     behind the gates below: a connector has no session cookie;
 //  4. the API gate chain: an API key, else the cookie, then same-origin and
-//     CSRF for cookie sessions. Everything registered after this point (the
-//     upstream REST API, /files) is behind it;
+//     CSRF for cookie sessions (a key passes through all three untouched).
+//     POST /admin/api/users is mounted right after that, the one route a
+//     provisioning-scoped key may reach; everything else is behind
+//     RefuseProvisioningScope, which that key never passes;
 //  5. /files, owner-checked media.
 //
 // mcpDeps are the usecases the MCP tools call; Install adds the owner-checked
@@ -522,8 +524,25 @@ func (r *Runtime) Install(app *fiber.App, dm *whatsapp.DeviceManager, mcpDeps ui
 	// before the API gate would answer it in JSON.
 	app.Use(web.NotFoundPages(app, r.Web))
 	// A key request carries no session id, so RequireSameOriginAPI and
-	// VerifyCSRF (which judge cookie sessions only) let it through.
-	app.Use(r.Auth.APIKey(), r.Auth.RequireAPI(), r.Auth.RequireSameOriginAPI(), r.Auth.VerifyCSRF())
+	// VerifyCSRF (which judge cookie sessions only) let it through - which
+	// is exactly why they come BEFORE MountAdminAPI rather than after it:
+	// a provisioning-scoped or superadmin API key reaches that route either
+	// way, but a plain cookie session (a superadmin's own browser, tricked
+	// into a cross-site POST while signed in) must still pass CSRF and
+	// same-origin here, the same as every other state-changing route. Only
+	// RefuseProvisioningScope comes after MountAdminAPI: that is the one
+	// gate a provisioning-scoped key must NOT meet before reaching it.
+	app.Use(r.Auth.APIKey(), r.Auth.RequireAPI())
+	app.Use(r.Auth.RequireSameOriginAPI(), r.Auth.VerifyCSRF())
+	// POST /admin/api/users: the one route a provisioning-scoped key may
+	// reach (or a superadmin's own key). It must be registered here, before
+	// RefuseProvisioningScope, so a provisioning-scoped caller still
+	// reaches it.
+	web.MountAdminAPI(app, r.Web)
+	// Everything registered from here on refuses a provisioning-scoped key
+	// outright: registration order is the enforcement, not a scope check
+	// each later route has to remember to add.
+	app.Use(r.Auth.RefuseProvisioningScope())
 	// PUT /devices/:device_id/label: behind the API gate (a session or an
 	// API key), before the upstream /devices routes.
 	web.MountDeviceLabelAPI(app, r.Web)

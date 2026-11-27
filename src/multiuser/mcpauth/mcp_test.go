@@ -215,6 +215,21 @@ func TestAPIKeyWorksOnMCP(t *testing.T) {
 	assert401WithChallenge(t, e.rpc(mcpRequest("wtfk_unknownunknownunknownunknownunknownunk", "", `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)))
 }
 
+// Security: a provisioning-scoped key (minted only for the one combined
+// create-user-and-mint-its-key REST endpoint) is refused on /mcp exactly
+// like an invalid token, never let through as Alice. /mcp is a separate
+// guard from the REST gate chain RefuseProvisioningScope sits in, so
+// without its own scope check this key would otherwise authenticate here
+// as freely as an ordinary one and reach every MCP tool as its owner.
+func TestProvisioningScopedKeyIsRefusedOnMCP(t *testing.T) {
+	e := newMCPEnv(t)
+	raw, _, err := e.st.CreateProvisioningAPIKey(context.Background(), e.alice.ID, "chatter")
+	require.NoError(t, err)
+	assert401WithChallenge(t, e.rpc(mcpRequest(raw, "", `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)))
+	r := e.rpc(mcpRequest(e.aliceAT, "", `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+	assert.Equal(t, http.StatusOK, r.status, "Alice's own OAuth connection is untouched")
+}
+
 func TestHeaderDeviceOfAnotherUserIsNotResolved(t *testing.T) {
 	e := newMCPEnv(t)
 	for _, target := range []string{"d_bob", "d_spare", "d_ghost"} {

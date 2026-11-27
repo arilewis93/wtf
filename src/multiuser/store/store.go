@@ -143,6 +143,8 @@ var migrations = []string{
 	// created_at itself (DevicesOf's "oldest first" order reads that
 	// column, and a retry must not reshuffle a person's device list).
 	`ALTER TABLE device_owners ADD COLUMN last_attempt_at TIMESTAMP NULL`,
+	// Scoped provisioning keys: every key made before this is ScopeFull.
+	`ALTER TABLE api_keys ADD COLUMN scope TEXT NOT NULL DEFAULT 'full'`,
 }
 
 func (s *Store) migrate(ctx context.Context) error {

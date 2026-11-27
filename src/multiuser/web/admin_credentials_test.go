@@ -58,9 +58,9 @@ func TestDisablingRevokesKeysAndConnectedApps(t *testing.T) {
 	resp, _ = postForm(t, e, admin, "/admin/users/"+targetID+"/status", url.Values{"csrf": {tok}, "status": {"active"}})
 	require.Equal(t, http.StatusSeeOther, resp.StatusCode)
 
-	_, _, err := e.st.UserByAPIKey(ctx, targetKey)
+	_, _, _, err := e.st.UserByAPIKey(ctx, targetKey)
 	require.Error(t, err, "the key stays dead after re-enabling")
-	_, _, err = e.st.UserByAPIKey(ctx, otherKey)
+	_, _, _, err = e.st.UserByAPIKey(ctx, otherKey)
 	require.NoError(t, err, "nobody else's key is touched")
 	require.Empty(t, g.grants[targetID], "their connected apps are gone")
 	require.Equal(t, []string{"fam_target"}, g.revoked)
@@ -80,9 +80,9 @@ func TestChangingANumberRevokesKeysAndConnectedApps(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "+27825550109", u.Phone)
 
-	_, _, err = e.st.UserByAPIKey(ctx, targetKey)
+	_, _, _, err = e.st.UserByAPIKey(ctx, targetKey)
 	require.Error(t, err)
-	_, _, err = e.st.UserByAPIKey(ctx, otherKey)
+	_, _, _, err = e.st.UserByAPIKey(ctx, otherKey)
 	require.NoError(t, err)
 	require.Equal(t, []string{"fam_target"}, g.revoked)
 }
@@ -119,6 +119,6 @@ func TestDisablingWithoutMCPStillRevokesKeys(t *testing.T) {
 	resp, _ := postForm(t, e, admin, "/admin/users/"+targetID+"/status", url.Values{"csrf": {csrfFor(t, e, admin)}, "status": {"disabled"}})
 	require.Equal(t, http.StatusSeeOther, resp.StatusCode)
 	require.NoError(t, e.st.SetUserStatus(context.Background(), targetID, store.StatusActive))
-	_, _, err = e.st.UserByAPIKey(context.Background(), key)
+	_, _, _, err = e.st.UserByAPIKey(context.Background(), key)
 	require.Error(t, err)
 }

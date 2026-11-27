@@ -33,13 +33,14 @@ func TestAPIKeyRoundTrip(t *testing.T) {
 	require.Equal(t, raw[len(APIKeyPrefix):len(APIKeyPrefix)+6], k.Prefix)
 	require.Nil(t, k.LastUsedAt)
 
-	u, keyID, err := st.UserByAPIKey(ctx, raw)
+	u, keyID, scope, err := st.UserByAPIKey(ctx, raw)
 	require.NoError(t, err)
 	require.Equal(t, alice.ID, u.ID)
 	require.Equal(t, k.ID, keyID)
+	require.Equal(t, ScopeFull, scope)
 
 	for _, bad := range []string{"", APIKeyPrefix, raw[len(APIKeyPrefix):], raw + "x", strings.ToUpper(raw)} {
-		_, _, err := st.UserByAPIKey(ctx, bad)
+		_, _, _, err := st.UserByAPIKey(ctx, bad)
 		require.ErrorIs(t, err, ErrNotFound, bad)
 	}
 }
@@ -79,7 +80,7 @@ func TestRevokedKeyNoLongerAuthenticates(t *testing.T) {
 	raw, k, err := st.CreateAPIKey(ctx, alice.ID, "k")
 	require.NoError(t, err)
 	require.NoError(t, st.RevokeAPIKey(ctx, alice.ID, k.ID))
-	_, _, err = st.UserByAPIKey(ctx, raw)
+	_, _, _, err = st.UserByAPIKey(ctx, raw)
 	require.ErrorIs(t, err, ErrNotFound)
 	require.ErrorIs(t, st.RevokeAPIKey(ctx, alice.ID, k.ID), ErrNotFound, "revoking twice is not found")
 	keys, err := st.APIKeysOf(ctx, alice.ID)
@@ -97,7 +98,7 @@ func TestRevokeAnotherUsersKeyIsNotFound(t *testing.T) {
 	require.NoError(t, err)
 	require.ErrorIs(t, st.RevokeAPIKey(ctx, alice.ID, k.ID), ErrNotFound)
 	require.ErrorIs(t, st.RevokeAPIKey(ctx, alice.ID, "k_nope"), ErrNotFound)
-	u, _, err := st.UserByAPIKey(ctx, raw)
+	u, _, _, err := st.UserByAPIKey(ctx, raw)
 	require.NoError(t, err, "bob's key still works")
 	require.Equal(t, bob.ID, u.ID)
 }
@@ -176,11 +177,69 @@ func TestRevokeAllAPIKeys(t *testing.T) {
 	b1, _, _ := st.CreateAPIKey(ctx, bob.ID, "b1")
 	require.NoError(t, st.RevokeAllAPIKeys(ctx, alice.ID))
 	for _, raw := range []string{a1, a2} {
-		_, _, err := st.UserByAPIKey(ctx, raw)
+		_, _, _, err := st.UserByAPIKey(ctx, raw)
 		require.ErrorIs(t, err, ErrNotFound)
 	}
-	_, _, err := st.UserByAPIKey(ctx, b1)
+	_, _, _, err := st.UserByAPIKey(ctx, b1)
 	require.NoError(t, err)
+}
+
+// Behaviour: CreateAPIKey (the ordinary, personal key every existing caller
+// makes) writes scope='full' explicitly, unchanged from before this column
+// existed; CreateProvisioningAPIKey writes scope='provisioning'.
+func TestCreateAPIKeyStillWritesFullScope(t *testing.T) {
+	st := openTest(t)
+	ctx := context.Background()
+	alice := keyUser(t, st, "+27825550101")
+
+	raw, k, err := st.CreateAPIKey(ctx, alice.ID, "ordinary")
+	require.NoError(t, err)
+	require.Equal(t, ScopeFull, k.Scope)
+
+	u, _, scope, err := st.UserByAPIKey(ctx, raw)
+	require.NoError(t, err)
+	require.Equal(t, alice.ID, u.ID)
+	require.Equal(t, ScopeFull, scope)
+}
+
+func TestCreateProvisioningAPIKeyWritesProvisioningScope(t *testing.T) {
+	st := openTest(t)
+	ctx := context.Background()
+	alice := keyUser(t, st, "+27825550101")
+
+	raw, k, err := st.CreateProvisioningAPIKey(ctx, alice.ID, "chatter provisioning")
+	require.NoError(t, err)
+	require.Equal(t, ScopeProvisioning, k.Scope)
+
+	u, _, scope, err := st.UserByAPIKey(ctx, raw)
+	require.NoError(t, err)
+	require.Equal(t, alice.ID, u.ID)
+	require.Equal(t, ScopeProvisioning, scope)
+}
+
+// Behaviour: UserByAPIKey reports the right scope for a key made either way,
+// and the same validation (name required, length, the live-key cap) applies
+// to a provisioning key as to an ordinary one.
+func TestUserByAPIKeyReportsScopeForEitherKind(t *testing.T) {
+	st := openTest(t)
+	ctx := context.Background()
+	alice := keyUser(t, st, "+27825550101")
+
+	full, _, err := st.CreateAPIKey(ctx, alice.ID, "full")
+	require.NoError(t, err)
+	prov, _, err := st.CreateProvisioningAPIKey(ctx, alice.ID, "provisioning")
+	require.NoError(t, err)
+
+	_, _, scope, err := st.UserByAPIKey(ctx, full)
+	require.NoError(t, err)
+	require.Equal(t, ScopeFull, scope)
+
+	_, _, scope, err = st.UserByAPIKey(ctx, prov)
+	require.NoError(t, err)
+	require.Equal(t, ScopeProvisioning, scope)
+
+	_, _, err = st.CreateProvisioningAPIKey(ctx, alice.ID, "   ")
+	require.ErrorIs(t, err, ErrInvalid)
 }
 
 func TestKeyLimit(t *testing.T) {

@@ -55,7 +55,18 @@ func mountAPIKeys(app *fiber.App, d Deps) {
 	app.Post("/account/api-keys", page, csrf, func(c fiber.Ctx) error {
 		u, _ := userOf(c)
 		name := strings.Clone(c.FormValue("name")) // fiber form values alias a reused buffer
-		raw, k, err := d.Store.CreateAPIKey(c.Context(), u.ID, name)
+		// The posted flag is never trusted alone: only a caller this request
+		// itself proves is a superadmin can mint a provisioning-scoped key.
+		// Anyone else ticking it (by hand or by editing the form) silently
+		// gets an ordinary key instead, exactly as if they had left it blank.
+		var raw string
+		var k *store.APIKey
+		var err error
+		if c.FormValue("provisioning") != "" && d.Auth.IsSuperadmin(u) {
+			raw, k, err = d.Store.CreateProvisioningAPIKey(c.Context(), u.ID, name)
+		} else {
+			raw, k, err = d.Store.CreateAPIKey(c.Context(), u.ID, name)
+		}
 		if err != nil {
 			msg := ""
 			switch {

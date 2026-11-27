@@ -204,6 +204,26 @@ func (m *Manager) RequireAPI() fiber.Handler {
 	}
 }
 
+// RefuseProvisioningScope refuses every request authenticated by a
+// provisioning-scoped API key: a flat 403, no route-name allowlist to
+// maintain. Mount it once, right after the one route a provisioning key may
+// reach (web.MountAdminAPI) and before everything else in the REST gate
+// chain - the restriction is who comes AFTER it in registration order, not
+// a scope check each later handler has to remember to make. A cookie
+// session or a full-scope key carries no scope at all (KeyScopeFrom reports
+// false) and is let through untouched.
+func (m *Manager) RefuseProvisioningScope() fiber.Handler {
+	return func(c fiber.Ctx) error {
+		if scope, ok := KeyScopeFrom(c.Context()); ok && ScopeIsRestricted(scope) {
+			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+				"status": fiber.StatusForbidden, "code": "PROVISIONING_SCOPE_REFUSED",
+				"message": "this key can only create a WTF user",
+			})
+		}
+		return c.Next()
+	}
+}
+
 // RequireSameOriginAPI guards the cookie-authenticated machine API (the
 // upstream REST routes). Upstream has GET routes with side effects (logout,
 // reconnect, login), and SameSite=Lax still sends our cookie on a top-level

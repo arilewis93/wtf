@@ -92,6 +92,33 @@ func (s *ScopedDevices) ListDevices(ctx context.Context) ([]domainDevice.Device,
 	return out, nil
 }
 
+// FilterOwnDevices narrows a raw device listing shaped like
+// serviceApp.FetchDevices' response (what GET /app/devices returns) down to
+// the authenticated caller's own devices. /app/devices calls the device
+// manager directly with no owner filter at all and sits outside
+// DeviceMiddleware's per-device ownership check (it names no device to
+// resolve), so this is the one place that check reaches that route: the
+// same ownership source (LabelsOf) ListDevices already uses, kept as one
+// definition rather than a second one that could disagree with it. No
+// authenticated caller means no devices, never the unscoped list.
+func FilterOwnDevices(ctx context.Context, st *store.Store, all []domainApp.DevicesResponse) ([]domainApp.DevicesResponse, error) {
+	u, ok := auth.UserFrom(ctx)
+	if !ok {
+		return []domainApp.DevicesResponse{}, nil
+	}
+	mine, err := st.LabelsOf(ctx, u.ID)
+	if err != nil {
+		return nil, err
+	}
+	out := []domainApp.DevicesResponse{}
+	for _, d := range all {
+		if _, ok := mine[d.Device]; ok {
+			out = append(out, d)
+		}
+	}
+	return out, nil
+}
+
 // AddDevice ignores the requested id: the server picks it. Ownership is
 // reserved before the device is created, in one statement that also enforces
 // the user's limit and the server-wide cap, so concurrent adds cannot exceed
@@ -232,6 +259,7 @@ func (s *ScopedDevices) LoginDevice(ctx context.Context, id string) (domainApp.L
 	if err := s.own(ctx, id); err != nil {
 		return domainApp.LoginResponse{}, err
 	}
+	s.touchLinkAttempt(ctx, id)
 	return s.inner.LoginDevice(ctx, id)
 }
 
@@ -239,7 +267,19 @@ func (s *ScopedDevices) LoginDeviceWithCode(ctx context.Context, id, phone strin
 	if err := s.own(ctx, id); err != nil {
 		return "", err
 	}
+	s.touchLinkAttempt(ctx, id)
 	return s.inner.LoginDeviceWithCode(ctx, id, phone)
+}
+
+// touchLinkAttempt records that id's owner just started (or retried) a
+// linking attempt, so StaleSlotSweeper's cutoff resets for it and a slot
+// mid-handshake is not reaped out from under the attempt. Best-effort: a
+// failure here must never block the actual login/pairing-code call, only
+// delay when the sweeper would next be willing to take this slot.
+func (s *ScopedDevices) touchLinkAttempt(ctx context.Context, id string) {
+	if err := s.st.TouchLinkAttempt(ctx, id); err != nil {
+		logrus.WithError(err).Warnf("[WTF] could not record a linking attempt for device %s", id)
+	}
 }
 
 func (s *ScopedDevices) LogoutDevice(ctx context.Context, id string) error {

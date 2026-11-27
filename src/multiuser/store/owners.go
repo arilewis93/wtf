@@ -21,6 +21,38 @@ func (s *Store) OwnerOf(ctx context.Context, deviceID string) (string, error) {
 	return userID, err
 }
 
+// PhoneClaimedByOtherOwner reports whether some OTHER account's slot is now
+// the one actively holding phone (bare digits, as last_phone stores it): not
+// signed out. A phone number is not permanently bound to one account: it
+// can be released by one and re-paired under a completely different one
+// later. Account deletion calls this before clearing chat data under that
+// number's JID, because that chat partition then belongs to whoever holds
+// the number now, not to whoever used to - deleting it on behalf of the
+// account being removed would destroy a different, live account's current
+// chat history.
+//
+// This is deliberately fail-closed and nothing more: device_owners has no
+// column that actually records when a phone was last PAIRED (created_at is
+// only when the slot was reserved, not a real pairing-recency signal, and a
+// version of this check that compared it was rejected in review three times
+// running for exactly that reason). "Not signed out" is the one real,
+// durable signal of an active claim this store has. The cost is a narrow
+// edge case: another owner's row that is itself abandoned but never got
+// marked signed out reads as a live claim too, so the account being
+// deleted's own stale chat history can linger a little longer than
+// strictly necessary - a minor retention nicety, never a cross-tenant
+// destruction risk, which is the property that actually matters here.
+func (s *Store) PhoneClaimedByOtherOwner(ctx context.Context, excludeUserID, phone string) (bool, error) {
+	if phone == "" {
+		return false, nil
+	}
+	var n int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(1) FROM device_owners WHERE last_phone = ? AND user_id != ? AND signed_out_at IS NULL`,
+		phone, excludeUserID).Scan(&n)
+	return n > 0, err
+}
+
 func (s *Store) DevicesOf(ctx context.Context, userID string) ([]string, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT device_id FROM device_owners WHERE user_id = ? ORDER BY created_at, device_id`, userID)

@@ -1,6 +1,7 @@
 package rest
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/aldinokemal/go-whatsapp-web-multidevice/config"
@@ -14,6 +15,18 @@ import (
 type App struct {
 	Service domainApp.IAppUsecase
 }
+
+// FilterOwnDevicesFunc lets the multi-user layer narrow GET /app/devices to
+// the authenticated caller's own devices. serviceApp.FetchDevices (the
+// Service above) always lists every device the DeviceManager holds, with no
+// owner filter of its own, and this route is not behind DeviceMiddleware's
+// per-device ownership check either, since it names no device to resolve.
+// Nil (upstream / single-user mode) keeps the whole list, because there's
+// only one owner anyway. Multi-user mode wires this to the same ownership
+// check multiuser/owners.ScopedDevices.ListDevices already applies
+// (multiuser/owners.FilterOwnDevices), so an authenticated caller can no
+// longer see every other user's device names, ids and phone JIDs here.
+var FilterOwnDevicesFunc func(ctx context.Context, all []domainApp.DevicesResponse) ([]domainApp.DevicesResponse, error)
 
 func InitRestApp(app fiber.Router, service domainApp.IAppUsecase) App {
 	rest := App{Service: service}
@@ -194,6 +207,11 @@ func (handler *App) Reconnect(c fiber.Ctx) error {
 func (handler *App) Devices(c fiber.Ctx) error {
 	devices, err := handler.Service.FetchDevices(c.Context())
 	utils.PanicIfNeeded(err)
+
+	if FilterOwnDevicesFunc != nil {
+		devices, err = FilterOwnDevicesFunc(c.Context(), devices)
+		utils.PanicIfNeeded(err)
+	}
 
 	return c.JSON(utils.ResponseData{
 		Status:  200,

@@ -17,14 +17,22 @@ type OwnedSlot struct {
 	UserID   string
 }
 
+// notRetriedSince is paired with neverLinked everywhere the sweep's cutoff is
+// checked: a slot reopened for a fresh linking attempt (TouchLinkAttempt)
+// stays off the stale list until the cutoff passes again from that attempt,
+// even though it has held no WhatsApp identity yet and created_at itself
+// does not move.
+const notRetriedSince = `(last_attempt_at IS NULL OR last_attempt_at < ?)`
+
 // NeverLinkedSlotsBefore lists slots reserved before cutoff that never held a
-// WhatsApp identity, oldest first. cutoff may be in any zone: it is compared
-// as UTC text against created_at, which the store always writes in UTC.
+// WhatsApp identity and have not been retried since, oldest first. cutoff
+// may be in any zone: it is compared as UTC text against created_at and
+// last_attempt_at, which the store always writes in UTC.
 func (s *Store) NeverLinkedSlotsBefore(ctx context.Context, cutoff time.Time) ([]OwnedSlot, error) {
 	cutoff = cutoff.UTC()
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT device_id, user_id FROM device_owners WHERE `+neverLinked+` AND created_at < ?
-		 ORDER BY created_at, device_id`, cutoff)
+		`SELECT device_id, user_id FROM device_owners WHERE `+neverLinked+` AND created_at < ? AND `+notRetriedSince+`
+		 ORDER BY created_at, device_id`, cutoff, cutoff)
 	if err != nil {
 		return nil, err
 	}
@@ -41,15 +49,28 @@ func (s *Store) NeverLinkedSlotsBefore(ctx context.Context, cutoff time.Time) ([
 }
 
 // ExpireNeverLinkedSlot deletes deviceID's owner row only if it is still a
-// never-linked slot reserved before cutoff, in one statement, so a slot that
-// was scanned in the meantime is never taken. It reports whether it did.
+// never-linked slot reserved before cutoff and not retried since, in one
+// statement, so a slot that was scanned - or retried - in the meantime is
+// never taken. It reports whether it did.
 func (s *Store) ExpireNeverLinkedSlot(ctx context.Context, deviceID string, cutoff time.Time) (bool, error) {
 	cutoff = cutoff.UTC() // see NeverLinkedSlotsBefore
 	res, err := s.db.ExecContext(ctx,
-		`DELETE FROM device_owners WHERE device_id = ? AND `+neverLinked+` AND created_at < ?`, deviceID, cutoff)
+		`DELETE FROM device_owners WHERE device_id = ? AND `+neverLinked+` AND created_at < ? AND `+notRetriedSince,
+		deviceID, cutoff, cutoff)
 	if err != nil {
 		return false, err
 	}
 	n, err := res.RowsAffected()
 	return n == 1, err
+}
+
+// TouchLinkAttempt records that deviceID's owner just started (or retried) a
+// linking attempt, resetting the stale-slot sweeper's cutoff for it without
+// moving created_at itself. ScopedDevices.LoginDevice and
+// LoginDeviceWithCode call this on every attempt (first or retried), so a
+// slot that is mid-handshake when the sweep tick fires is never reaped out
+// from under it.
+func (s *Store) TouchLinkAttempt(ctx context.Context, deviceID string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE device_owners SET last_attempt_at = ? WHERE device_id = ?`, s.now(), deviceID)
+	return err
 }

@@ -37,6 +37,49 @@ func TestOwnership(t *testing.T) {
 	require.Empty(t, ids)
 }
 
+// TestPhoneClaimedByOtherOwner is account deletion's safety check: a phone
+// number can be released by one account and re-paired under a completely
+// different one, so "who last recorded this number" must be checked per
+// OWNER, not assumed to still be the account being deleted. The rule is
+// deliberately simple and fail-closed, with no recency comparison at all
+// (device_owners has no column that actually records when a phone was last
+// PAIRED, only when a slot was reserved, which is not a real pairing-
+// recency signal): any OTHER owner currently holding a non-signed-out slot
+// with this number blocks the deletion, full stop, however old that slot's
+// own reservation is. Only "signed out" lets the original account's own
+// leftover chat history be cleaned up.
+func TestPhoneClaimedByOtherOwner(t *testing.T) {
+	st := openTest(t)
+	ctx := context.Background()
+	a, _ := st.CreateUser(ctx, "+27825550100")
+	require.NoError(t, st.SetOwner(ctx, "d_a1", a.ID))
+	require.NoError(t, st.RecordIdentity(ctx, "d_a1", "27825550199", "A's number"))
+
+	claimed, err := st.PhoneClaimedByOtherOwner(ctx, a.ID, "27825550199")
+	require.NoError(t, err)
+	require.False(t, claimed, "nobody else holds it yet")
+
+	b, _ := st.CreateUser(ctx, "+27825550101")
+
+	// Another owner's slot, reserved long before a's own, still blocks the
+	// deletion while it is not signed out: no recency comparison at all.
+	require.NoError(t, st.SetOwner(ctx, "d_b1", b.ID))
+	require.NoError(t, st.RecordIdentity(ctx, "d_b1", "27825550199", "b's phone now"))
+	claimed, err = st.PhoneClaimedByOtherOwner(ctx, a.ID, "27825550199")
+	require.NoError(t, err)
+	require.True(t, claimed, "another owner holds this number and is not signed out")
+
+	// Signed out: no longer an active claim, so cleanup may proceed.
+	require.NoError(t, st.MarkSignedOut(ctx, "d_b1", "", ""))
+	claimed, err = st.PhoneClaimedByOtherOwner(ctx, a.ID, "27825550199")
+	require.NoError(t, err)
+	require.False(t, claimed, "the only other row with this phone is signed out")
+
+	claimed, err = st.PhoneClaimedByOtherOwner(ctx, a.ID, "")
+	require.NoError(t, err)
+	require.False(t, claimed, "an empty number claims nothing")
+}
+
 func TestReserveOwnerEnforcesLimitAtomically(t *testing.T) {
 	st := openTest(t)
 	ctx := context.Background()

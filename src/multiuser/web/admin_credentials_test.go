@@ -87,6 +87,28 @@ func TestChangingANumberRevokesKeysAndConnectedApps(t *testing.T) {
 	require.Equal(t, []string{"fam_target"}, g.revoked)
 }
 
+// Security: changing someone's number must also end every passkey they
+// registered beforehand, the same as it ends their sessions, API keys and
+// connected apps. Without this, a passkey registered on the old number
+// could still sign in to the renamed account afterward, contradicting
+// AdminChangePhone's own doc comment ("ends every way back in").
+func TestChangingANumberRevokesPasskeys(t *testing.T) {
+	e, _, admin, targetID, _, _ := credentialFixture(t)
+	tok := csrfFor(t, e, admin)
+	ctx := context.Background()
+
+	require.NoError(t, e.st.AddPasskey(ctx, store.Passkey{
+		CredentialID: "cred_target", UserID: targetID, Name: "Target's phone", CredentialJSON: []byte(`{}`),
+	}))
+
+	resp, _ := postForm(t, e, admin, "/admin/users/"+targetID+"/phone", url.Values{"csrf": {tok}, "phone": {"+27825550109"}})
+	require.Equal(t, http.StatusSeeOther, resp.StatusCode)
+
+	list, err := e.st.PasskeysOf(ctx, targetID)
+	require.NoError(t, err)
+	require.Empty(t, list, "a passkey registered before the number change can no longer sign in to the renamed account")
+}
+
 // Behaviour: with MCP off (no grant store) disabling still revokes keys.
 func TestDisablingWithoutMCPStillRevokesKeys(t *testing.T) {
 	e := withDevices(t, &devStub{})

@@ -76,6 +76,15 @@ func (s *Store) UpdatePasskeyCredential(ctx context.Context, credID string, cred
 	return nil
 }
 
+// DeleteUserPasskeys removes every passkey the user registered. A phone
+// number change (and account disabling/deletion) must end every one of
+// them, not just one at a time: unlike DeletePasskey this never errors when
+// the user has none, since "already gone" is the state being asked for.
+func (s *Store) DeleteUserPasskeys(ctx context.Context, userID string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM passkeys WHERE user_id = ?`, userID)
+	return err
+}
+
 func (s *Store) DeletePasskey(ctx context.Context, userID, credID string) error {
 	res, err := s.db.ExecContext(ctx, `DELETE FROM passkeys WHERE credential_id = ? AND user_id = ?`, credID, userID)
 	if err != nil {

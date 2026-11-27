@@ -138,6 +138,11 @@ var migrations = []string{
 	// comparisons and ORDER BYs above hold for rows written before the clock
 	// was pinned to UTC. Run in Go (see timesToUTC), not as SQL.
 	migrateTimesToUTC,
+	// Gap F: a separate "retried at" timestamp for the stale-slot sweep's
+	// cutoff, so a retried linking attempt resets it without disturbing
+	// created_at itself (DevicesOf's "oldest first" order reads that
+	// column, and a retry must not reshuffle a person's device list).
+	`ALTER TABLE device_owners ADD COLUMN last_attempt_at TIMESTAMP NULL`,
 }
 
 func (s *Store) migrate(ctx context.Context) error {

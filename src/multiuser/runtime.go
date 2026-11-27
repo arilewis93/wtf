@@ -499,9 +499,10 @@ func userAgentToken(name string) string {
 //     browsers to sign in), then /mcp behind its own guard (an OAuth token or
 //     an API key; a 401 with the Bearer challenge otherwise). Neither may sit
 //     behind the gates below: a connector has no session cookie;
-//  4. the API gate chain: an API key, else the cookie, then same-origin and
-//     CSRF for cookie sessions. Everything registered after this point (the
-//     upstream REST API, /files) is behind it;
+//  4. the API gate chain: an API key, else the cookie. POST /admin/api/users
+//     is mounted right here, the one route a provisioning-scoped key may
+//     reach; everything else is behind RefuseProvisioningScope (which that
+//     key never passes) and then same-origin and CSRF for cookie sessions;
 //  5. /files, owner-checked media.
 //
 // mcpDeps are the usecases the MCP tools call; Install adds the owner-checked
@@ -523,7 +524,17 @@ func (r *Runtime) Install(app *fiber.App, dm *whatsapp.DeviceManager, mcpDeps ui
 	app.Use(web.NotFoundPages(app, r.Web))
 	// A key request carries no session id, so RequireSameOriginAPI and
 	// VerifyCSRF (which judge cookie sessions only) let it through.
-	app.Use(r.Auth.APIKey(), r.Auth.RequireAPI(), r.Auth.RequireSameOriginAPI(), r.Auth.VerifyCSRF())
+	app.Use(r.Auth.APIKey(), r.Auth.RequireAPI())
+	// POST /admin/api/users: the one route a provisioning-scoped key may
+	// reach (or a superadmin's own key). It must be registered here, before
+	// RefuseProvisioningScope, so a provisioning-scoped caller still
+	// reaches it.
+	web.MountAdminAPI(app, r.Web)
+	// Everything registered from here on refuses a provisioning-scoped key
+	// outright: registration order is the enforcement, not a scope check
+	// each later route has to remember to add.
+	app.Use(r.Auth.RefuseProvisioningScope())
+	app.Use(r.Auth.RequireSameOriginAPI(), r.Auth.VerifyCSRF())
 	// PUT /devices/:device_id/label: behind the API gate (a session or an
 	// API key), before the upstream /devices routes.
 	web.MountDeviceLabelAPI(app, r.Web)

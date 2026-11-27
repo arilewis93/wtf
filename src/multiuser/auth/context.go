@@ -48,3 +48,16 @@ func KeyScopeFrom(ctx context.Context) (string, bool) {
 	s, ok := ctx.Value(keyScopeKey{}).(string)
 	return s, ok && s != ""
 }
+
+// ScopeIsRestricted reports whether scope is confined to the one
+// purpose-built endpoint it was minted for (web.MountAdminAPI) and must be
+// refused by every OTHER entry point into this service - today that is the
+// REST gate chain (RefuseProvisioningScope, right after MountAdminAPI in
+// runtime.go) and /mcp (mcpauth.Middleware) alike. Only store.ScopeProvisioning
+// is restricted this way; both call this one function rather than each
+// keeping its own copy of the rule, so a third entry point added later
+// (another bearer-token guard, say) inherits the restriction by calling it
+// too, instead of silently reopening the hole a copy-pasted check would.
+func ScopeIsRestricted(scope string) bool {
+	return scope == store.ScopeProvisioning
+}

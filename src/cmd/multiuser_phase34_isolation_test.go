@@ -22,9 +22,12 @@ import (
 // RemoveDevice announces each removal on an unbuffered channel.
 var drainHub sync.Once
 
-// Security (phases 3 and 4): every admin page and action, the waitlist's
+// Security (phases 3 and 4): every admin PAGE and action, the waitlist's
 // included, is a 404 to a member with a session and never answers a
 // member's API key (page routes take sessions only: off to sign-in).
+// POST /admin/api/users is deliberately excluded: it is a machine JSON
+// endpoint, not a page, and TestAdminAPIUsersRefusesAMemberEitherWay pins
+// its own (403, not 404-hiding) convention instead.
 func TestEveryAdminRouteRefusesMembers(t *testing.T) {
 	app, rt, _ := newMultiUserApp(t, uimcp.Deps{})
 	ctx := context.Background()
@@ -42,6 +45,9 @@ func TestEveryAdminRouteRefusesMembers(t *testing.T) {
 	for _, r := range app.GetRoutes(true) {
 		if !strings.HasPrefix(r.Path, "/admin") || (r.Method != fiber.MethodGet && r.Method != fiber.MethodPost) {
 			continue
+		}
+		if r.Path == "/admin/api/users" {
+			continue // a JSON machine endpoint, not a page; see the doc comment above
 		}
 		path := strings.ReplaceAll(fill(r.Path, "d_bob"), "/x/", "/27825550111/")
 		if strings.HasSuffix(path, "/x") {
@@ -70,6 +76,32 @@ func TestEveryAdminRouteRefusesMembers(t *testing.T) {
 	require.True(t, deleteWalked, "an admin's Delete account is in the walk")
 	_, err = rt.Store.UserByPhone(ctx, "+27825550111")
 	require.ErrorIs(t, err, store.ErrNotFound, "nobody was let in")
+}
+
+// Security: POST /admin/api/users answers a member's own (full-scope) key
+// with a plain 403, not the 404-hiding convention every /admin PAGE uses -
+// it is a machine endpoint, so an honest refusal beats obscurity.
+func TestAdminAPIUsersRefusesAMemberEitherWay(t *testing.T) {
+	app, rt, _ := newMultiUserApp(t, uimcp.Deps{})
+	ctx := context.Background()
+	alice, _ := rt.Store.CreateUser(ctx, "+27825550101")
+	key, _, err := rt.Store.CreateAPIKey(ctx, alice.ID, "script")
+	require.NoError(t, err)
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/api/users", strings.NewReader(`{"phone":"+15555550199"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+key)
+	resp, err := app.Test(req)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusForbidden, resp.StatusCode)
+	_, err = rt.Store.UserByPhone(ctx, "+15555550199")
+	require.ErrorIs(t, err, store.ErrNotFound)
+
+	req = httptest.NewRequest(http.MethodPost, "/admin/api/users", strings.NewReader(`{"phone":"+15555550199"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err = app.Test(req)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusUnauthorized, resp.StatusCode, "no credential at all")
 }
 
 // Security (phase 3): Alice deleting her account never touches Bob's

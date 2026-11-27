@@ -307,6 +307,15 @@ func initEnvConfig() {
 	if viper.IsSet("chatwoot_message_delete") {
 		config.ChatwootMessageDelete = viper.GetBool("chatwoot_message_delete")
 	}
+
+	// WTF: must happen here, not in restServer's full multi-user setup.
+	// cobra.OnInitialize runs initEnvConfig, then initAppUnlessSkipped (which
+	// calls initApp, whose LoadExistingDevices does orphan-slot adoption),
+	// both before restServer's body - and therefore before restServer's own
+	// loadMultiUserSettings call - ever runs. By the time anything in
+	// restServer knew multi-user mode was even active, the adoption window
+	// had already run and closed. See applyOrphanAdoptionSetting.
+	applyOrphanAdoptionSetting()
 }
 
 func initFlags() {

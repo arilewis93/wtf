@@ -38,6 +38,28 @@ func loadMultiUserSettings() (multiuser.Settings, error) {
 	return multiuser.Load(settingGetenv)
 }
 
+// applyOrphanAdoptionSetting sets whatsapp.DisableOrphanSlotAdoption before
+// LoadExistingDevices ever runs. It must be called from initEnvConfig
+// (cobra.OnInitialize's first hook), not from restServer: restServer's own
+// multi-user detection (loadMultiUserSettings, config.MultiUserEnabled) only
+// runs from inside the "rest" command's Run body, which cobra invokes AFTER
+// every OnInitialize hook - including the one that calls initApp, whose
+// LoadExistingDevices does the orphan-slot adoption. By the time restServer
+// knew multi-user mode was even active, the adoption window had already run
+// and closed.
+//
+// multiuser.Load reads only WTF_MULTIUSER (and, when that is true, a few
+// other env vars) - no database connection or other late-available resource
+// - so Enabled is safe to read this early even on a path whose fuller
+// validation (e.g. SESSION_SECRET) might otherwise fail; Enabled is set
+// before any such validation runs and is returned alongside any error.
+// restServer's later call to the same function still surfaces that error
+// for real (logrus.Fatalln); this call only ever reads the one bool.
+func applyOrphanAdoptionSetting() {
+	s, _ := loadMultiUserSettings()
+	whatsapp.DisableOrphanSlotAdoption = s.Enabled
+}
+
 // setupMultiUser is called by restServer when WTF_MULTIUSER=true. It must run
 // before any apiGroup registration so the API gate precedes upstream routes.
 func setupMultiUser(app *fiber.App, dm *whatsapp.DeviceManager, s multiuser.Settings) (*multiuser.Runtime, error) {

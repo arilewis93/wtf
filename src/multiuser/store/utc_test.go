@@ -185,7 +185,25 @@ func TestOldNonUTCRowsAreRewrittenToUTC(t *testing.T) {
 	require.True(t, ok, "before: an expired link read as valid")
 
 	// Re-run only the rewrite, as an existing database meets it on upgrade.
-	_, err = st.db.Exec(`UPDATE wtf_schema SET version = ?`, len(migrations)-1)
+	// migrateTimesToUTC is not necessarily the LAST entry any more (new
+	// migrations are appended after it, never before - inserting one ahead
+	// of an already-shipped entry would skip it entirely on any database
+	// that already recorded a later version), so its index is found rather
+	// than assumed. Replaying the generic ALTER migrations after it would
+	// fail on a column that already exists from the Open above, so each
+	// one's own column is dropped first; this needs a new line here only
+	// when a future migration is appended after migrateTimesToUTC too.
+	idx := -1
+	for i, m := range migrations {
+		if m == migrateTimesToUTC {
+			idx = i
+			break
+		}
+	}
+	require.GreaterOrEqual(t, idx, 0, "migrateTimesToUTC must still be one of the migrations")
+	_, err = st.db.Exec(`ALTER TABLE device_owners DROP COLUMN last_attempt_at`)
+	require.NoError(t, err)
+	_, err = st.db.Exec(`UPDATE wtf_schema SET version = ?`, idx)
 	require.NoError(t, err)
 	require.NoError(t, st.Close())
 	st, err = Open(path)

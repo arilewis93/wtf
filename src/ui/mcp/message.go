@@ -27,6 +27,13 @@ const maxInlineImageBytes = 5 * 1024 * 1024
 // an ordinary one always qualifies, bounded so this stays a reasonable MCP payload.
 const maxInlineAudioBytes = 16 * 1024 * 1024
 
+// maxInlineDocumentBytes bounds what download_media will base64-inline for a document
+// attachment (PDF and the like). Between the two above: a typical PDF a contact sends is a
+// few hundred KB to a few MB, well under this, but a document has no transcription fallback
+// the way audio does and no per-pixel compression the way an image does, so this stays more
+// conservative than the audio cap.
+const maxInlineDocumentBytes = 10 * 1024 * 1024
+
 // audioMimeTypes names the handful of codecs a WhatsApp voice note or audio file actually
 // arrives in. mime.TypeByExtension (used for images) is not reused here: it depends on the
 // host OS's registered types, and audio/ogg in particular is not reliably one of them.
@@ -196,6 +203,32 @@ func (h *MessageHandler) handleMessage(ctx context.Context, request mcpg.CallToo
 					fallback,
 				)
 				result := mcpg.NewToolResultAudio(note, base64.StdEncoding.EncodeToString(audioBytes), audioMimeTypeFor(resp.MediaType, resp.Filename))
+				result.StructuredContent = resp
+				return result, nil
+			}
+		}
+		// A document (a PDF above all) is the same dead end as an image or
+		// audio: file_url sits behind the same owner-scoped auth an MCP
+		// client cannot supply, so without this the only way to reach the
+		// bytes is a human opening the link themselves. Unlike audio, a
+		// document keeps its own real filename/extension (WhatsApp never
+		// transcodes a DocumentMessage the way it does AudioMessage into a
+		// fixed container), so mime.TypeByExtension is as reliable here as
+		// it already is for images - no separate lookup table needed.
+		// EmbeddedResource (not Image/Audio content) is the right shape:
+		// it carries an arbitrary mime type and blob, not just the two MCP
+		// has dedicated content types for.
+		if resp.MediaType == "document" && resp.FileSize > 0 && resp.FileSize <= maxInlineDocumentBytes {
+			if docBytes, readErr := os.ReadFile(resp.FilePath); readErr == nil {
+				mimeType := mime.TypeByExtension(filepath.Ext(resp.Filename))
+				if mimeType == "" {
+					mimeType = "application/octet-stream"
+				}
+				result := mcpg.NewToolResultResource(fallback, mcpg.BlobResourceContents{
+					URI:      resp.FileURL,
+					MIMEType: mimeType,
+					Blob:     base64.StdEncoding.EncodeToString(docBytes),
+				})
 				result.StructuredContent = resp
 				return result, nil
 			}

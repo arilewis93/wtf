@@ -17,10 +17,13 @@ import (
 
 // withAdminAPIRoutes mounts the pages plus the admin API and the label API
 // in the order runtime.go's Install wires them for Task 2: the API-key/
-// cookie gate, then MountAdminAPI (reachable by a provisioning-scoped key
-// or a superadmin's own key), then RefuseProvisioningScope, then the
-// same-origin/CSRF gate and every route after it (MountDeviceLabelAPI
-// stands in for "the upstream REST API" here).
+// cookie gate, then same-origin/CSRF (a key passes through both untouched;
+// a cookie session does not - this is what stops a cross-site browser POST
+// from a signed-in superadmin's own session), then MountAdminAPI
+// (reachable by a provisioning-scoped key or a superadmin's own key, by
+// either auth method), then RefuseProvisioningScope, then every route
+// after it (MountDeviceLabelAPI stands in for "the upstream REST API"
+// here).
 func withAdminAPIRoutes(t *testing.T, stub *devStub) *env {
 	t.Helper()
 	e := newEnv(t)
@@ -29,12 +32,28 @@ func withAdminAPIRoutes(t *testing.T, stub *devStub) *env {
 	app.Use(e.d.Auth.Middleware())
 	Mount(app, e.d)
 	app.Use(e.d.Auth.APIKey(), e.d.Auth.RequireAPI())
+	app.Use(e.d.Auth.RequireSameOriginAPI(), e.d.Auth.VerifyCSRF())
 	MountAdminAPI(app, e.d)
 	app.Use(e.d.Auth.RefuseProvisioningScope())
-	app.Use(e.d.Auth.RequireSameOriginAPI(), e.d.Auth.VerifyCSRF())
 	MountDeviceLabelAPI(app, e.d)
 	e.app = app
 	return e
+}
+
+// postAdminAPIUsersAsCookie posts to /admin/api/users authenticated by a
+// cookie session (never a key), optionally carrying an X-CSRF-Token header -
+// a JSON body has no form field for VerifyCSRF's bodyCSRF to read, so the
+// header is the only way a cookie-authenticated caller can pass it here.
+func postAdminAPIUsersAsCookie(t *testing.T, e *env, ck *http.Cookie, csrf, phone string) (*http.Response, string) {
+	t.Helper()
+	b, _ := json.Marshal(map[string]string{"phone": phone})
+	req := httptest.NewRequest(http.MethodPost, "/admin/api/users", strings.NewReader(string(b)))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(ck)
+	if csrf != "" {
+		req.Header.Set("X-CSRF-Token", csrf)
+	}
+	return e.do(t, req)
 }
 
 func postAdminAPIUsers(t *testing.T, e *env, bearer, phone string) (*http.Response, string) {
@@ -162,4 +181,60 @@ func TestCreatingAUserNeedsAuthentication(t *testing.T) {
 	e := withAdminAPIRoutes(t, &devStub{})
 	resp, _ := postAdminAPIUsers(t, e, "", "+15555550199")
 	require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+}
+
+// Security: a superadmin's own COOKIE session (not an API key) still needs
+// the CSRF token here, same as every other state-changing route - without
+// it, a cross-site page the superadmin merely has open in another tab
+// could silently create a WTF user on their behalf. This is what the
+// same-origin/CSRF gate running BEFORE MountAdminAPI (not after) buys:
+// without it this request would have gone straight through.
+func TestCreatingAUserAsACookieSessionNeedsCSRF(t *testing.T) {
+	e := withAdminAPIRoutes(t, &devStub{})
+	admin, _ := signedIn(t, e, "+27825550100")
+
+	resp, _ := postAdminAPIUsersAsCookie(t, e, admin, "", "+15555550198")
+	require.Equal(t, http.StatusForbidden, resp.StatusCode)
+	_, err := e.st.UserByPhone(context.Background(), "+15555550198")
+	require.Error(t, err, "no account created without a valid CSRF token")
+
+	resp, body := postAdminAPIUsersAsCookie(t, e, admin, csrfFor(t, e, admin), "+15555550198")
+	require.Equal(t, http.StatusCreated, resp.StatusCode, body, "the same request with a real token works")
+	_, err = e.st.UserByPhone(context.Background(), "+15555550198")
+	require.NoError(t, err)
+}
+
+// Security: a simulated cross-site request (Sec-Fetch-Site: cross-site) is
+// refused by RequireSameOriginAPI before VerifyCSRF is even reached, token
+// or not - the same protection every other cookie-authenticated API route
+// gets, now covering this one too.
+func TestCreatingAUserAsACookieSessionRefusesCrossSite(t *testing.T) {
+	e := withAdminAPIRoutes(t, &devStub{})
+	admin, _ := signedIn(t, e, "+27825550100")
+	csrf := csrfFor(t, e, admin)
+
+	b, _ := json.Marshal(map[string]string{"phone": "+15555550197"})
+	req := httptest.NewRequest(http.MethodPost, "/admin/api/users", strings.NewReader(string(b)))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-CSRF-Token", csrf)
+	req.Header.Set("Sec-Fetch-Site", "cross-site")
+	req.AddCookie(admin)
+	resp, _ := e.do(t, req)
+	require.Equal(t, http.StatusForbidden, resp.StatusCode)
+	_, err := e.st.UserByPhone(context.Background(), "+15555550197")
+	require.Error(t, err)
+}
+
+// Behaviour: a provisioning-scoped key still works here with no CSRF
+// token or Sec-Fetch-Site header at all, exactly as before the reorder -
+// moving the same-origin/CSRF gate earlier costs a key-authenticated
+// caller nothing (APIKey() clears the session id the CSRF checks key off).
+func TestProvisioningKeyStillNeedsNoCSRFAfterTheReorder(t *testing.T) {
+	e := withAdminAPIRoutes(t, &devStub{})
+	_, adminID := signedIn(t, e, "+27825550100")
+	provKey, _, err := e.st.CreateProvisioningAPIKey(context.Background(), adminID, "chatter")
+	require.NoError(t, err)
+
+	resp, body := postAdminAPIUsers(t, e, provKey, "+15555550196")
+	require.Equal(t, http.StatusCreated, resp.StatusCode, body)
 }
